@@ -1,0 +1,31 @@
+[package]
+name = "sn_dbc_examples"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.44"
+# sn_dbc = {version = "2.9.1", features = ["dkg"]}
+sn_dbc = {path="/home/danda/dev/maidsafe/sn_dbc", features = ["dkg"]}
+structopt = "0.3.25"
+tokio = { version = "1.16.1", features = ["rt-multi-thread", "macros", "io-util"] }
+xor_name = "3.1.0"
+bls_dkg = "0.9.1"
+rand = "0.7.3"
+rand_core = "~0.5.1"
+serde = "1.0.130"
+log = "0.4.14"
+env_logger = "0.9.0"
+bincode = "1.3.3"
+futures = "0.3.17"
+
+[dependencies.qp2p]
+version = "0.28.0"
+path="/home/danda/dev/maidsafe/qp2p"
+features = ["structopt"]
+
+[dependencies.miette]
+version = "3.2.0"
+features = ["fancy"]
