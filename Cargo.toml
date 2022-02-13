@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.44"
 # sn_dbc = {version = "2.9.1", features = ["dkg"]}
-sn_dbc = {path="/home/danda/dev/maidsafe/sn_dbc", features = ["dkg"]}
+sn_dbc = {path="/home/danda/dev/maidsafe/sn_dbc", features = ["dkg", "serdes"]}
 structopt = "0.3.25"
 tokio = { version = "1.16.1", features = ["rt-multi-thread", "macros", "io-util"] }
 xor_name = "3.1.0"
@@ -20,6 +20,7 @@ log = "0.4.14"
 env_logger = "0.9.0"
 bincode = "1.3.3"
 futures = "0.3.17"
+bytes = "1.1.0"
 
 [dependencies.qp2p]
 version = "0.28.0"

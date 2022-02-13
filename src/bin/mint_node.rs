@@ -7,30 +7,14 @@
 // specific language governing permissions and limitations relating to use of the SAFE Network
 // Software.
 
+use bytes::Bytes;
 use log::{debug, info, trace};
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-// use blst_ringct::ringct::{RingCtMaterial, RingCtTransaction};
-// use blst_ringct::RevealedCommitment;
-// use blsttc::poly::Poly;
-// use blsttc::serde_impl::SerdeSecret;
-// use blsttc::{PublicKey, PublicKeySet, SecretKey, SecretKeySet, SecretKeyShare};
-// use rand::seq::IteratorRandom;
-// use rand::Rng;
-// use rand8::SeedableRng;
-// use serde::{Deserialize, Serialize};
-use sn_dbc::{
-    MintNode,
-    SimpleKeyManager,
-    SimpleSigner,
-    // Amount, Dbc, DbcBuilder, GenesisBuilderMock, MintNode, Output, OutputOwnerMap, Owner,
-    // OwnerOnce, ReissueRequest, ReissueRequestBuilder, SimpleKeyManager, SpentBookNodeMock,
-    // TransactionBuilder,
-};
-// use std::collections::{BTreeMap, HashMap};
+use sn_dbc::{MintNode, ReissueRequest, ReissueShare, SimpleKeyManager, SimpleSigner};
 
 use xor_name::XorName;
 
@@ -98,7 +82,12 @@ enum MintNetworkMsg {
 
 #[derive(Debug, Serialize, Deserialize)]
 enum WalletNetworkMsg {
-    Rpc(String),
+    Reissue(ReissueRequest),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum WalletNetworkMsgReply {
+    ReissueReply(sn_dbc::Result<ReissueShare>),
 }
 
 #[tokio::main]
@@ -264,9 +253,14 @@ impl MintNodeServer {
 
                     debug!("[P2P] received from {:?} --> {:?}", socket_addr, net_msg);
 
-                    match net_msg {
-                        WalletNetworkMsg::Rpc(json) => myself.handle_json_request(json).await?,
-                    }
+                    let reply_msg = match net_msg {
+                        WalletNetworkMsg::Reissue(rr) => WalletNetworkMsgReply::ReissueReply(
+                            myself.handle_reissue_request(rr).await,
+                        ),
+                    };
+
+                    let reply_msg_bytes = Bytes::from(bincode::serialize(&reply_msg).unwrap());
+                    connection.send(reply_msg_bytes).await.into_diagnostic()?;
                 }
             }
         }
@@ -274,8 +268,8 @@ impl MintNodeServer {
 }
 
 impl MintNodeServerData {
-    async fn handle_json_request(&self, _json: String) -> Result<()> {
-        Ok(())
+    async fn handle_reissue_request(&self, rr: ReissueRequest) -> sn_dbc::Result<ReissueShare> {
+        self.mint_node.as_ref().unwrap().reissue(rr)
     }
 
     async fn send_mint_network_msg(
