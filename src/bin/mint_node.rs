@@ -7,12 +7,11 @@
 // specific language governing permissions and limitations relating to use of the SAFE Network
 // Software.
 
-//! Safe Network DBC Mint Node example.
-#![allow(clippy::from_iter_instead_of_collect)]
-
 use log::{debug, info, trace};
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // use blst_ringct::ringct::{RingCtMaterial, RingCtTransaction};
 // use blst_ringct::RevealedCommitment;
@@ -32,7 +31,6 @@ use sn_dbc::{
     // TransactionBuilder,
 };
 // use std::collections::{BTreeMap, HashMap};
-// use std::iter::FromIterator;
 
 use xor_name::XorName;
 
@@ -50,6 +48,10 @@ pub struct MintNodeConfig {
     /// Peer addresses (other MintNodes)
     peers: Vec<SocketAddr>,
 
+    /// number of MintNode peers that make up a Mint
+    #[structopt(long, default_value = "3")]
+    quorum_size: usize,
+
     #[structopt(flatten)]
     mint_qp2p_opts: Config,
     // we would like to do the following, but not (yet?) supported.
@@ -66,7 +68,7 @@ struct ServerEndpoint {
     incoming_connections: IncomingConnections,
 }
 
-struct MintNodeServer {
+struct MintNodeServerData {
     xor_name: XorName,
 
     config: MintNodeConfig,
@@ -82,6 +84,10 @@ struct MintNodeServer {
     wallet_endpoint: ServerEndpoint,
 
     keygen: Option<bls_dkg::KeyGen>,
+}
+
+struct MintNodeServer {
+    data: Arc<Mutex<MintNodeServerData>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -114,7 +120,6 @@ async fn do_main() -> Result<()> {
     //    .format(|buf, record| writeln!(buf, "{}\n", record.args()))
     .init();
 
-    // let mut rng = rand::thread_rng();
     let config = MintNodeConfig::from_args();
 
     let (endpoint, incoming_connections, _contact) = Endpoint::new_peer(
@@ -152,7 +157,7 @@ async fn do_main() -> Result<()> {
         mint_endpoint.endpoint.public_addr()
     );
 
-    let mut my_node = MintNodeServer {
+    let my_node_data = MintNodeServerData {
         config,
         xor_name: my_xor_name,
         peers: BTreeMap::from_iter([(my_xor_name, mint_endpoint.endpoint.public_addr())]),
@@ -162,88 +167,113 @@ async fn do_main() -> Result<()> {
         keygen: None,
     };
 
+    let my_node = MintNodeServer {
+        data: Arc::new(Mutex::new(my_node_data)),
+    };
+
     my_node.run().await?;
 
     Ok(())
 }
 
 impl MintNodeServer {
-    async fn run(&mut self) -> Result<()> {
-        for peer in self.config.peers.clone().iter() {
-            let msg =
-                MintNetworkMsg::Peer(self.xor_name, self.mint_endpoint.endpoint.public_addr());
-            self.send_mint_network_msg(&msg, peer).await?;
-        }
-
-        self.listen_for_mint_network_msgs().await
-        // self.listen_for_wallet_network_msgs().await;
-
-        // futures::try_join!(mint_future, wallet_future).map(|_| ())
-        // tokio::join!(mint_future, wallet_future);
-        // Ok(())
-    }
-
-    async fn listen_for_mint_network_msgs(&mut self) -> Result<()> {
-        let local_addr = self.mint_endpoint.endpoint.local_addr();
-        let external_addr = self.mint_endpoint.endpoint.public_addr();
-        info!(
-            "[P2P] listening on local  {:?}, external: {:?}",
-            local_addr, external_addr
-        );
-
-        while let Some((connection, mut incoming_messages)) =
-            self.mint_endpoint.incoming_connections.next().await
+    async fn run(self) -> Result<()> {
         {
-            let socket_addr = connection.remote_address();
+            let myself = self.data.lock().await;
 
-            while let Some(bytes) = incoming_messages.next().await.into_diagnostic()? {
-                // async version
-                let net_msg: MintNetworkMsg = bincode::deserialize(&bytes).into_diagnostic()?;
-
-                debug!("[P2P] received from {:?} --> {:?}", socket_addr, net_msg);
-                let mut rng = rand::thread_rng();
-                // let mut rng: rand::rngs::OsRng = Default::default();
-
-                match net_msg {
-                    MintNetworkMsg::Peer(actor, addr) => self.handle_peer_msg(actor, addr).await?,
-                    MintNetworkMsg::Dkg(msg) => self.handle_dkg_message(msg, &mut rng).await?,
-                }
+            for peer in myself.config.peers.clone().iter() {
+                let msg = MintNetworkMsg::Peer(
+                    myself.xor_name,
+                    myself.mint_endpoint.endpoint.public_addr(),
+                );
+                myself.send_mint_network_msg(&msg, peer).await?;
             }
         }
 
-        info!("[P2P] Finished listening for incoming messages");
-        Ok(())
+        tokio::try_join!(
+            self.listen_for_mint_network_msgs(),
+            self.listen_for_wallet_network_msgs()
+        )
+        .map(|_| ())
     }
 
-    async fn listen_for_wallet_network_msgs(&mut self) -> Result<()> {
-        let local_addr = self.wallet_endpoint.endpoint.local_addr();
-        let external_addr = self.wallet_endpoint.endpoint.public_addr();
-        info!(
-            "[Wallet] listening on local  {:?}, external: {:?}",
-            local_addr, external_addr
-        );
-
-        while let Some((connection, mut incoming_messages)) =
-            self.wallet_endpoint.incoming_connections.next().await
+    async fn listen_for_mint_network_msgs(&self) -> Result<()> {
         {
-            let socket_addr = connection.remote_address();
+            let myself = self.data.lock().await;
 
-            while let Some(bytes) = incoming_messages.next().await.into_diagnostic()? {
-                // async version
-                let net_msg: WalletNetworkMsg = bincode::deserialize(&bytes).into_diagnostic()?;
+            let local_addr = myself.mint_endpoint.endpoint.local_addr();
+            let external_addr = myself.mint_endpoint.endpoint.public_addr();
+            info!(
+                "[P2P] listening on local  {:?}, external: {:?}",
+                local_addr, external_addr
+            );
+        }
 
-                debug!("[P2P] received from {:?} --> {:?}", socket_addr, net_msg);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let mut myself = self.data.lock().await;
 
-                match net_msg {
-                    WalletNetworkMsg::Rpc(json) => self.handle_json_request(json).await?,
+            if let Ok((connection, mut incoming_messages)) =
+                myself.mint_endpoint.incoming_connections.try_recv()
+            {
+                let socket_addr = connection.remote_address();
+
+                while let Some(bytes) = incoming_messages.next().await.into_diagnostic()? {
+                    let net_msg: MintNetworkMsg = bincode::deserialize(&bytes).into_diagnostic()?;
+
+                    debug!("[P2P] received from {:?} --> {:?}", socket_addr, net_msg);
+                    let mut rng = rand::thread_rng();
+
+                    match net_msg {
+                        MintNetworkMsg::Peer(actor, addr) => {
+                            myself.handle_peer_msg(actor, addr).await?
+                        }
+                        MintNetworkMsg::Dkg(msg) => {
+                            myself.handle_dkg_message(msg, &mut rng).await?
+                        }
+                    }
                 }
             }
         }
-
-        info!("[Wallet] Finished listening for incoming messages");
-        Ok(())
     }
 
+    async fn listen_for_wallet_network_msgs(&self) -> Result<()> {
+        {
+            let myself = self.data.lock().await;
+
+            let local_addr = myself.wallet_endpoint.endpoint.local_addr();
+            let external_addr = myself.wallet_endpoint.endpoint.public_addr();
+            info!(
+                "[Wallet] listening on local  {:?}, external: {:?}",
+                local_addr, external_addr
+            );
+        }
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let mut myself = self.data.lock().await;
+
+            if let Ok((connection, mut incoming_messages)) =
+                myself.wallet_endpoint.incoming_connections.try_recv()
+            {
+                let socket_addr = connection.remote_address();
+
+                while let Some(bytes) = incoming_messages.next().await.into_diagnostic()? {
+                    let net_msg: WalletNetworkMsg =
+                        bincode::deserialize(&bytes).into_diagnostic()?;
+
+                    debug!("[P2P] received from {:?} --> {:?}", socket_addr, net_msg);
+
+                    match net_msg {
+                        WalletNetworkMsg::Rpc(json) => myself.handle_json_request(json).await?,
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl MintNodeServerData {
     async fn handle_json_request(&self, _json: String) -> Result<()> {
         Ok(())
     }
@@ -306,8 +336,8 @@ impl MintNodeServer {
 
             trace!("Added peer [{:?}]@{:?}", actor, addr);
 
-            if self.peers.len() == 3 {
-                println!("initiating dkg with {} nodes", self.peers.len());
+            if self.peers.len() == self.config.quorum_size {
+                info!("initiating dkg with {} nodes", self.peers.len());
                 self.initiate_dkg().await?;
             }
         }
@@ -331,11 +361,19 @@ impl MintNodeServer {
         rng: &mut impl RngCore,
     ) -> Result<()> {
         match &mut self.keygen {
-            Some(keygen) => match keygen.handle_message(rng, message) {
-                Ok(message_and_targets) => self.broadcast_dkg_messages(message_and_targets).await?,
-                Err(e) => return Err(e).into_diagnostic(),
-            },
-            None => panic!("received dkg message before initiating dkg"),
+            Some(keygen) => {
+                if keygen.is_finalized() {
+                    debug!("ignoring dkg message because already finalized");
+                    return Ok(());
+                }
+                match keygen.handle_message(rng, message) {
+                    Ok(message_and_targets) => {
+                        self.broadcast_dkg_messages(message_and_targets).await?
+                    }
+                    Err(e) => return Err(e).into_diagnostic(),
+                }
+            }
+            None => debug!("received dkg message before initiating dkg"),
         }
 
         match &mut self.keygen {
@@ -345,14 +383,12 @@ impl MintNodeServer {
                     self.mint_node = Some(MintNode::new(SimpleKeyManager::from(
                         SimpleSigner::from(outcome),
                     )));
-                    println!("DKG finalized!");
-                    println!("MintNode created!");
-
-                    self.listen_for_wallet_network_msgs().await?;
+                    info!("DKG finalized!");
+                    info!("MintNode created!");
                 }
                 Ok(())
             }
-            None => panic!("received dkg message before initiating dkg"),
+            None => Ok(()), // already logged it above
         }
     }
 
