@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use sn_dbc::{MintNode, ReissueRequest, ReissueShare, SimpleKeyManager, SimpleSigner};
+use sn_dbc::{MintNode, ReissueRequest, ReissueShare, SimpleKeyManager, SimpleSigner, KeyManager};
+use bls_dkg::PublicKeySet;
 
 use xor_name::XorName;
 
@@ -75,18 +76,20 @@ struct MintNodeServer {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum MintNetworkMsg {
+enum MintP2pNetworkMsg {
     Peer(XorName, SocketAddr),
     Dkg(bls_dkg::message::Message),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum WalletNetworkMsg {
+enum MintWalletNetworkMsg {
+    Discover,
     Reissue(ReissueRequest),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-enum WalletNetworkMsgReply {
+enum MintWalletNetworkMsgReply {
+    DiscoverReply(PublicKeySet, BTreeMap<XorName,SocketAddr>),
     ReissueReply(sn_dbc::Result<ReissueShare>),
 }
 
@@ -171,7 +174,7 @@ impl MintNodeServer {
             let myself = self.data.lock().await;
 
             for peer in myself.config.peers.clone().iter() {
-                let msg = MintNetworkMsg::Peer(
+                let msg = MintP2pNetworkMsg::Peer(
                     myself.xor_name,
                     myself.mint_endpoint.endpoint.public_addr(),
                 );
@@ -208,16 +211,16 @@ impl MintNodeServer {
                 let socket_addr = connection.remote_address();
 
                 while let Some(bytes) = incoming_messages.next().await.into_diagnostic()? {
-                    let net_msg: MintNetworkMsg = bincode::deserialize(&bytes).into_diagnostic()?;
+                    let net_msg: MintP2pNetworkMsg = bincode::deserialize(&bytes).into_diagnostic()?;
 
                     debug!("[P2P] received from {:?} --> {:?}", socket_addr, net_msg);
                     let mut rng = rand::thread_rng();
 
                     match net_msg {
-                        MintNetworkMsg::Peer(actor, addr) => {
+                        MintP2pNetworkMsg::Peer(actor, addr) => {
                             myself.handle_peer_msg(actor, addr).await?
                         }
-                        MintNetworkMsg::Dkg(msg) => {
+                        MintP2pNetworkMsg::Dkg(msg) => {
                             myself.handle_dkg_message(msg, &mut rng).await?
                         }
                     }
@@ -248,14 +251,18 @@ impl MintNodeServer {
                 let socket_addr = connection.remote_address();
 
                 while let Some(bytes) = incoming_messages.next().await.into_diagnostic()? {
-                    let net_msg: WalletNetworkMsg =
+                    let net_msg: MintWalletNetworkMsg =
                         bincode::deserialize(&bytes).into_diagnostic()?;
 
                     debug!("[P2P] received from {:?} --> {:?}", socket_addr, net_msg);
 
                     let reply_msg = match net_msg {
-                        WalletNetworkMsg::Reissue(rr) => WalletNetworkMsgReply::ReissueReply(
+                        MintWalletNetworkMsg::Reissue(rr) => MintWalletNetworkMsgReply::ReissueReply(
                             myself.handle_reissue_request(rr).await,
+                        ),
+                        MintWalletNetworkMsg::Discover => MintWalletNetworkMsgReply::DiscoverReply(
+                            myself.mint_node.as_ref().unwrap().key_manager.public_key_set().unwrap().clone(),
+                            myself.peers.clone(),
                         ),
                     };
 
@@ -274,7 +281,7 @@ impl MintNodeServerData {
 
     async fn send_mint_network_msg(
         &self,
-        msg: &MintNetworkMsg,
+        msg: &MintP2pNetworkMsg,
         dest_addr: &SocketAddr,
     ) -> Result<()> {
         // if delivering to self, use local addr rather than external to avoid
@@ -323,7 +330,7 @@ impl MintNodeServerData {
         } else {
             // Here we send our peer list back to the new peer.
             for (peer_actor, peer_addr) in self.peers.clone().into_iter() {
-                self.send_mint_network_msg(&MintNetworkMsg::Peer(peer_actor, peer_addr), &addr)
+                self.send_mint_network_msg(&MintP2pNetworkMsg::Peer(peer_actor, peer_addr), &addr)
                     .await?;
             }
             self.peers.insert(actor, addr);
@@ -392,7 +399,7 @@ impl MintNodeServerData {
     ) -> Result<()> {
         for (target, message) in message_and_target.into_iter() {
             let target_addr = self.peers.get(&target).unwrap();
-            let msg = MintNetworkMsg::Dkg(message);
+            let msg = MintP2pNetworkMsg::Dkg(message);
             self.send_mint_network_msg(&msg, target_addr).await?;
         }
         Ok(())
