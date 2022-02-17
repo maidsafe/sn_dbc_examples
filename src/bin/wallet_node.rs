@@ -7,32 +7,33 @@
 // specific language governing permissions and limitations relating to use of the SAFE Network
 // Software.
 
-use log::{debug};
-use miette::{IntoDiagnostic, Result, miette};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use log::debug;
+use miette::{miette, IntoDiagnostic, Result};
+// use serde::{Deserialize, Serialize};
+use bls_dkg::PublicKeySet;
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use sn_dbc_examples::wire;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use xor_name::XorName;
-use bls_dkg::PublicKeySet;
 
-use sn_dbc::{ReissueRequest, ReissueShare, 
-    // TransactionBuilder, ReissueRequestBuilder, DbcBuilder,
-    KeyImage, SpentProofShare};
-use blst_ringct::ringct::RingCtTransaction;
+// use sn_dbc::{
+//     ReissueRequest, ReissueShare,
+//     TransactionBuilder, ReissueRequestBuilder, DbcBuilder,
+//     KeyImage, SpentProofShare};
+// use blst_ringct::ringct::RingCtTransaction;
 
 use qp2p::{self, Config, Endpoint};
 use structopt::StructOpt;
 
-use std::collections::{BTreeMap};
+use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
 
 /// Configuration for the program
 #[derive(StructOpt, Default)]
 pub struct WalletNodeConfig {
-
     /// address:port of spentbook node used to query spentbook peers upon startup
     #[structopt(long)]
     join_spentbook: Option<SocketAddr>,
@@ -46,7 +47,6 @@ pub struct WalletNodeConfig {
 }
 
 struct WalletNodeData {
-
     config: WalletNodeConfig,
 
     spentbook_nodes: BTreeMap<XorName, SocketAddr>,
@@ -62,33 +62,6 @@ struct WalletNodeData {
 struct WalletNodeClient {
     data: Arc<Mutex<WalletNodeData>>,
 }
-
-
-#[derive(Debug, Serialize, Deserialize)]
-enum SpentbookWalletNetworkMsg {
-    Discover,
-    LogSpent(KeyImage, RingCtTransaction),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum SpentbookWalletNetworkMsgReply {
-    DiscoverReply(PublicKeySet, BTreeMap<XorName,SocketAddr>),
-    LogSpentReply(sn_dbc::Result<SpentProofShare>),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum MintWalletNetworkMsg {
-    Discover,
-    Reissue(ReissueRequest),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum MintWalletNetworkMsgReply {
-    DiscoverReply(PublicKeySet, BTreeMap<XorName,SocketAddr>),
-    ReissueReply(sn_dbc::Result<ReissueShare>),
-}
-
-
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -137,7 +110,6 @@ async fn do_main() -> Result<()> {
 
 impl WalletNodeClient {
     async fn run(mut self) -> Result<()> {
-
         print_logo();
 
         self.process_config().await?;
@@ -201,24 +173,21 @@ impl WalletNodeClient {
     async fn cli_join(&mut self) -> Result<()> {
         let mut myself = self.data.lock().await;
 
-        let addr: SocketAddr = readline_prompt(
-            "Spentbook peer [ip:port]: ",
-        )?.parse().into_diagnostic()?;
+        let addr: SocketAddr = readline_prompt("Spentbook peer [ip:port]: ")?
+            .parse()
+            .into_diagnostic()?;
 
         myself.join_spentbook_section(addr).await
     }
-
 }
 
 impl WalletNodeData {
-
     async fn join_spentbook_section(&mut self, addr: SocketAddr) -> Result<()> {
-
-        let msg = SpentbookWalletNetworkMsg::Discover;
+        let msg = wire::SpentbookWalletNetworkMsg::Discover;
         let reply_msg = self.send_spentbook_network_msg(&msg, &addr).await?;
 
         match reply_msg {
-            SpentbookWalletNetworkMsgReply::DiscoverReply(spentbook_pks, spentbook_nodes) => {
+            wire::SpentbookWalletNetworkMsgReply::DiscoverReply(spentbook_pks, spentbook_nodes) => {
                 self.spentbook_pks = Some(spentbook_pks);
                 self.spentbook_nodes = spentbook_nodes;
                 println!("got spentbook peers: {:#?}", self.spentbook_nodes);
@@ -229,12 +198,11 @@ impl WalletNodeData {
     }
 
     async fn join_mint_section(&mut self, addr: SocketAddr) -> Result<()> {
-
-        let msg = MintWalletNetworkMsg::Discover;
+        let msg = wire::MintWalletNetworkMsg::Discover;
         let reply_msg = self.send_mint_network_msg(&msg, &addr).await?;
 
         match reply_msg {
-            MintWalletNetworkMsgReply::DiscoverReply(mint_pks, mint_nodes) => {
+            wire::MintWalletNetworkMsgReply::DiscoverReply(mint_pks, mint_nodes) => {
                 self.mint_pks = Some(mint_pks);
                 self.mint_nodes = mint_nodes;
                 println!("got mint peers: {:#?}", self.mint_nodes);
@@ -246,9 +214,9 @@ impl WalletNodeData {
 
     async fn send_spentbook_network_msg(
         &self,
-        msg: &SpentbookWalletNetworkMsg,
+        msg: &wire::SpentbookWalletNetworkMsg,
         dest_addr: &SocketAddr,
-    ) -> Result<SpentbookWalletNetworkMsgReply> {
+    ) -> Result<wire::SpentbookWalletNetworkMsgReply> {
         debug!("Sending message to {:?} --> {:?}", dest_addr, msg);
 
         // fixme: unwrap
@@ -256,22 +224,23 @@ impl WalletNodeData {
 
         let (connection, mut recv) = self
             .wallet_endpoint
-            .connect_to(&dest_addr)
+            .connect_to(dest_addr)
             .await
             .into_diagnostic()?;
 
         connection.send(msg.into()).await.into_diagnostic()?;
         let bytes = recv.next().await.into_diagnostic()?.unwrap();
-        let net_msg: SpentbookWalletNetworkMsgReply = bincode::deserialize(&bytes).into_diagnostic()?;
+        let net_msg: wire::SpentbookWalletNetworkMsgReply =
+            bincode::deserialize(&bytes).into_diagnostic()?;
 
         Ok(net_msg)
     }
 
     async fn send_mint_network_msg(
         &self,
-        msg: &MintWalletNetworkMsg,
+        msg: &wire::MintWalletNetworkMsg,
         dest_addr: &SocketAddr,
-    ) -> Result<MintWalletNetworkMsgReply> {
+    ) -> Result<wire::MintWalletNetworkMsgReply> {
         debug!("Sending message to {:?} --> {:?}", dest_addr, msg);
 
         // fixme: unwrap
@@ -279,18 +248,17 @@ impl WalletNodeData {
 
         let (connection, mut recv) = self
             .wallet_endpoint
-            .connect_to(&dest_addr)
+            .connect_to(dest_addr)
             .await
             .into_diagnostic()?;
 
         connection.send(msg.into()).await.into_diagnostic()?;
         let bytes = recv.next().await.into_diagnostic()?.unwrap();
-        let net_msg: MintWalletNetworkMsgReply = bincode::deserialize(&bytes).into_diagnostic()?;
+        let net_msg: wire::MintWalletNetworkMsgReply =
+            bincode::deserialize(&bytes).into_diagnostic()?;
 
         Ok(net_msg)
     }
-
-
 }
 
 /// displays a welcome logo/banner for the app.
