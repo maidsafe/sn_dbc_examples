@@ -15,8 +15,6 @@ use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
 use sn_dbc_examples::wire;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use xor_name::XorName;
 
 // use sn_dbc::{
@@ -46,7 +44,7 @@ pub struct WalletNodeConfig {
     wallet_qp2p_opts: Config,
 }
 
-struct WalletNodeData {
+struct WalletNodeClient {
     config: WalletNodeConfig,
 
     spentbook_nodes: BTreeMap<XorName, SocketAddr>,
@@ -57,10 +55,6 @@ struct WalletNodeData {
 
     /// for communicating with others
     wallet_endpoint: Endpoint,
-}
-
-struct WalletNodeClient {
-    data: Arc<Mutex<WalletNodeData>>,
 }
 
 #[tokio::main]
@@ -90,17 +84,13 @@ async fn do_main() -> Result<()> {
     )
     .into_diagnostic()?;
 
-    let my_node_data = WalletNodeData {
+    let my_node = WalletNodeClient {
         config,
         spentbook_nodes: Default::default(),
         spentbook_pks: None,
         mint_nodes: Default::default(),
         mint_pks: None,
         wallet_endpoint,
-    };
-
-    let my_node = WalletNodeClient {
-        data: Arc::new(Mutex::new(my_node_data)),
     };
 
     my_node.run().await?;
@@ -158,30 +148,24 @@ impl WalletNodeClient {
     }
 
     async fn process_config(&mut self) -> Result<()> {
-        let mut myself = self.data.lock().await;
-
-        if let Some(addr) = myself.config.join_spentbook {
-            myself.join_spentbook_section(addr).await?;
+        if let Some(addr) = self.config.join_spentbook {
+            self.join_spentbook_section(addr).await?;
         }
-        if let Some(addr) = myself.config.join_mint {
-            myself.join_mint_section(addr).await?;
+        if let Some(addr) = self.config.join_mint {
+            self.join_mint_section(addr).await?;
         }
 
         Ok(())
     }
 
     async fn cli_join(&mut self) -> Result<()> {
-        let mut myself = self.data.lock().await;
-
         let addr: SocketAddr = readline_prompt("Spentbook peer [ip:port]: ")?
             .parse()
             .into_diagnostic()?;
 
-        myself.join_spentbook_section(addr).await
+        self.join_spentbook_section(addr).await
     }
-}
 
-impl WalletNodeData {
     async fn join_spentbook_section(&mut self, addr: SocketAddr) -> Result<()> {
         let msg = wire::SpentbookWalletNetworkMsg::Discover;
         let reply_msg = self.send_spentbook_network_msg(&msg, &addr).await?;
