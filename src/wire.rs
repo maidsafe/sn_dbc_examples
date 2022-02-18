@@ -19,7 +19,7 @@ use std::net::SocketAddr;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SpentbookP2pNetworkMsg {
-    Peer(XorName, SocketAddr),
+    Peer(XorName, SocketAddr, SocketAddr),
     Dkg(bls_dkg::message::Message),
 }
 
@@ -32,7 +32,7 @@ pub enum SpentbookWalletNetworkMsg {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SpentbookWalletNetworkMsgReply {
-    DiscoverReply(PublicKeySet, BTreeMap<XorName, SocketAddr>),
+    DiscoverReply(PublicKeySet, BTreeMap<XorName, (SocketAddr, SocketAddr)>),
     LogSpentReply(sn_dbc::Result<SpentProofShare>),
 }
 

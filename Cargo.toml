@@ -14,6 +14,7 @@ tokio = { version = "1.16.1", features = ["rt-multi-thread", "macros", "io-util"
 xor_name = "3.1.0"
 bls_dkg = "0.9.1"
 rand = "0.7.3"
+rand8 = {package = "rand", version = "0.8"}
 rand_core = "~0.5.1"
 serde = "1.0.130"
 log = "0.4.14"
@@ -23,6 +24,9 @@ futures = "0.3.17"
 bytes = "1.1.0"
 blst_ringct = {git="https://github.com/maidsafe/blst-ringct", features=["serde"]}
 rustyline = "9.0.0"
+chrono = "0.4.19"
+blsttc = "3.4.0"
+hex = "0.4.3"
 
 [dependencies.qp2p]
 version = "0.28.0"
