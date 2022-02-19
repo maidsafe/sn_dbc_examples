@@ -7,49 +7,95 @@
 // specific language governing permissions and limitations relating to use of the SAFE Network
 // Software.
 
-use bls_dkg::PublicKeySet;
-use serde::{Deserialize, Serialize};
-use xor_name::XorName;
+pub mod spentbook {
+    pub mod p2p {
 
-use blst_ringct::ringct::RingCtTransaction;
-use sn_dbc::{KeyImage, ReissueRequest, ReissueShare, SpentProofShare};
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        pub enum Msg {
+            Peer(xor_name::XorName, std::net::SocketAddr),
+            Dkg(bls_dkg::message::Message),
+        }
+    }
 
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
+    pub mod wallet {
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum SpentbookP2pNetworkMsg {
-    Peer(XorName, SocketAddr, SocketAddr),
-    Dkg(bls_dkg::message::Message),
+        pub mod request {
+            #[derive(Debug, serde::Serialize, serde::Deserialize)]
+            pub enum Msg {
+                Discover,
+                LogSpent(sn_dbc::KeyImage, blst_ringct::ringct::RingCtTransaction),
+            }
+        }
+
+        pub mod reply {
+            #[allow(clippy::large_enum_variant)]
+            #[derive(Debug, serde::Serialize, serde::Deserialize)]
+            pub enum Msg {
+                Discover(bls_dkg::PublicKeySet, std::collections::BTreeMap<xor_name::XorName, std::net::SocketAddr>),
+                LogSpent(sn_dbc::Result<sn_dbc::SpentProofShare>),
+            }
+        }
+
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        pub enum Msg {
+            Request(request::Msg),
+            Reply(reply::Msg),
+        }
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    pub enum Msg {
+        Wallet(wallet::Msg),
+        P2p(p2p::Msg)
+    }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum SpentbookWalletNetworkMsg {
-    Discover,
-    LogSpent(KeyImage, RingCtTransaction),
+pub mod mint {
+
+    pub mod p2p {
+
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        pub enum Msg {
+            Peer(xor_name::XorName, std::net::SocketAddr),
+            Dkg(bls_dkg::message::Message),
+        }
+        
+    }
+
+    pub mod wallet {
+
+        pub mod request {
+            #[derive(Debug, serde::Serialize, serde::Deserialize)]
+            pub enum Msg {
+                Discover,
+                Reissue(sn_dbc::ReissueRequest),
+            }
+        }
+
+        pub mod reply {
+            #[derive(Debug, serde::Serialize, serde::Deserialize)]
+            pub enum Msg {
+                Discover(bls_dkg::PublicKeySet, std::collections::BTreeMap<xor_name::XorName, std::net::SocketAddr>),
+                Reissue(sn_dbc::Result<sn_dbc::ReissueShare>),
+            }
+        }
+
+        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        pub enum Msg {
+            Request(request::Msg),
+            Reply(reply::Msg)
+        }        
+    }
+
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    pub enum Msg {
+        Wallet(wallet::Msg),
+        P2p(p2p::Msg)
+    }
 }
 
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Serialize, Deserialize)]
-pub enum SpentbookWalletNetworkMsgReply {
-    DiscoverReply(PublicKeySet, BTreeMap<XorName, (SocketAddr, SocketAddr)>),
-    LogSpentReply(sn_dbc::Result<SpentProofShare>),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum MintP2pNetworkMsg {
-    Peer(XorName, SocketAddr),
-    Dkg(bls_dkg::message::Message),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum MintWalletNetworkMsg {
-    Discover,
-    Reissue(ReissueRequest),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum MintWalletNetworkMsgReply {
-    DiscoverReply(PublicKeySet, BTreeMap<XorName, SocketAddr>),
-    ReissueReply(sn_dbc::Result<ReissueShare>),
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum Msg {
+    Spentbook(spentbook::Msg),
+    Mint(spentbook::Msg),
 }
