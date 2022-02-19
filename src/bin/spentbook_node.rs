@@ -10,8 +10,6 @@
 use bytes::Bytes;
 use log::{debug, info, trace};
 use miette::{IntoDiagnostic, Result};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use blst_ringct::ringct::RingCtTransaction;
 use sn_dbc::{
@@ -41,13 +39,6 @@ pub struct SpentbookNodeConfig {
 
     #[structopt(flatten)]
     p2p_qp2p_opts: Config,
-    // we would like to do the following, but not (yet?) supported.
-    // filed this: https://github.com/clap-rs/clap/issues/3443
-    // #[structopt(flatten, prefix="wallet")]
-    // wallet_qp2p_opts: Config,
-
-    // #[structopt(flatten, prefix="mint")]
-    // p2p_qp2p_opts: Config,
 }
 
 struct ServerEndpoint {
@@ -55,7 +46,7 @@ struct ServerEndpoint {
     incoming_connections: IncomingConnections,
 }
 
-struct SpentbookNodeServerData {
+struct SpentbookNodeServer {
     xor_name: XorName,
 
     config: SpentbookNodeConfig,
@@ -68,10 +59,6 @@ struct SpentbookNodeServerData {
     server_endpoint: ServerEndpoint,
 
     keygen: Option<bls_dkg::KeyGen>,
-}
-
-struct SpentbookNodeServer {
-    data: Arc<Mutex<SpentbookNodeServerData>>,
 }
 
 #[tokio::main]
@@ -115,7 +102,7 @@ async fn do_main() -> Result<()> {
         server_endpoint.endpoint.public_addr()
     );
 
-    let my_node_data = SpentbookNodeServerData {
+    let my_node = SpentbookNodeServer {
         config,
         xor_name: my_xor_name,
         peers: BTreeMap::from_iter([(my_xor_name, server_endpoint.endpoint.public_addr())]),
@@ -124,48 +111,37 @@ async fn do_main() -> Result<()> {
         keygen: None,
     };
 
-    let my_node = SpentbookNodeServer {
-        data: Arc::new(Mutex::new(my_node_data)),
-    };
-
     my_node.run().await?;
 
     Ok(())
 }
 
 impl SpentbookNodeServer {
-    async fn run(self) -> Result<()> {
+    async fn run(mut self) -> Result<()> {
         {
-            let myself = self.data.lock().await;
-
-            for peer in myself.config.peers.clone().iter() {
+            for peer in self.config.peers.clone().iter() {
                 let msg = wire::spentbook::p2p::Msg::Peer(
-                    myself.xor_name,
-                    myself.server_endpoint.endpoint.public_addr(),
+                    self.xor_name,
+                    self.server_endpoint.endpoint.public_addr(),
                 );
-                myself.send_p2p_network_msg(msg, peer).await?;
+                self.send_p2p_network_msg(msg, peer).await?;
             }
         }
 
         Ok(self.listen_for_network_msgs().await?)
     }
 
-    async fn listen_for_network_msgs(&self) -> Result<()> {
-        {
-            let myself = self.data.lock().await;
+    async fn listen_for_network_msgs(&mut self) -> Result<()> {
 
-            let local_addr = myself.server_endpoint.endpoint.local_addr();
-            let external_addr = myself.server_endpoint.endpoint.public_addr();
-            info!(
-                "[P2P] listening on local  {:?}, external: {:?}",
-                local_addr, external_addr
-            );
-        }
-
-        let mut myself = self.data.lock().await;
+        let local_addr = self.server_endpoint.endpoint.local_addr();
+        let external_addr = self.server_endpoint.endpoint.public_addr();
+        info!(
+            "[P2P] listening on local  {:?}, external: {:?}",
+            local_addr, external_addr
+        );
 
         while let Some((connection, mut incoming_messages)) =
-            myself.server_endpoint.incoming_connections.next().await
+            self.server_endpoint.incoming_connections.next().await
         {
             let socket_addr = connection.remote_address();
 
@@ -182,10 +158,10 @@ impl SpentbookNodeServer {
                     wire::spentbook::Msg::P2p(p2p_msg) => {
                         match p2p_msg {
                             wire::spentbook::p2p::Msg::Peer(actor, addr) => {
-                                myself.handle_peer_msg(actor, addr).await?
+                                self.handle_peer_msg(actor, addr).await?
                             },
                             wire::spentbook::p2p::Msg::Dkg(msg) => {
-                                myself.handle_p2p_message(msg, &mut rng).await?
+                                self.handle_p2p_message(msg, &mut rng).await?
                             },
                         }
                     },
@@ -195,12 +171,12 @@ impl SpentbookNodeServer {
                                 let reply_msg = match request_msg {
                                     wire::spentbook::wallet::request::Msg::LogSpent(k, t) => {
                                         wire::spentbook::wallet::reply::Msg::LogSpent(
-                                            myself.handle_log_spent_request(k, t).await,
+                                            self.handle_log_spent_request(k, t).await,
                                         )
                                     }
                                     wire::spentbook::wallet::request::Msg::Discover => {
                                         wire::spentbook::wallet::reply::Msg::Discover(
-                                            myself
+                                            self
                                                 .spentbook_node
                                                 .as_ref()
                                                 .unwrap()
@@ -208,7 +184,7 @@ impl SpentbookNodeServer {
                                                 .public_key_set()
                                                 .unwrap()
                                                 .clone(),
-                                            myself.peers.clone(),
+                                            self.peers.clone(),
                                         )
                                     }
                                 };
@@ -223,9 +199,7 @@ impl SpentbookNodeServer {
         }
         Ok(())
     }
-}
 
-impl SpentbookNodeServerData {
     async fn handle_log_spent_request(
         &mut self,
         key_image: KeyImage,
