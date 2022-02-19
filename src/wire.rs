@@ -31,7 +31,10 @@ pub mod spentbook {
             #[allow(clippy::large_enum_variant)]
             #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
             pub enum Msg {
-                Discover(bls_dkg::PublicKeySet, std::collections::BTreeMap<xor_name::XorName, std::net::SocketAddr>),
+                Discover(
+                    bls_dkg::PublicKeySet,
+                    std::collections::BTreeMap<xor_name::XorName, std::net::SocketAddr>,
+                ),
                 LogSpent(sn_dbc::Result<sn_dbc::SpentProofShare>),
             }
         }
@@ -46,7 +49,7 @@ pub mod spentbook {
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub enum Msg {
         Wallet(wallet::Msg),
-        P2p(p2p::Msg)
+        P2p(p2p::Msg),
     }
 }
 
@@ -59,7 +62,6 @@ pub mod mint {
             Peer(xor_name::XorName, std::net::SocketAddr),
             Dkg(bls_dkg::message::Message),
         }
-        
     }
 
     pub mod wallet {
@@ -75,7 +77,10 @@ pub mod mint {
         pub mod reply {
             #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
             pub enum Msg {
-                Discover(bls_dkg::PublicKeySet, std::collections::BTreeMap<xor_name::XorName, std::net::SocketAddr>),
+                Discover(
+                    bls_dkg::PublicKeySet,
+                    std::collections::BTreeMap<xor_name::XorName, std::net::SocketAddr>,
+                ),
                 Reissue(sn_dbc::Result<sn_dbc::ReissueShare>),
             }
         }
@@ -83,14 +88,14 @@ pub mod mint {
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub enum Msg {
             Request(request::Msg),
-            Reply(reply::Msg)
-        }        
+            Reply(reply::Msg),
+        }
     }
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub enum Msg {
         Wallet(wallet::Msg),
-        P2p(p2p::Msg)
+        P2p(p2p::Msg),
     }
 }
 

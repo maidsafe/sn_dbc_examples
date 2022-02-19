@@ -132,7 +132,6 @@ impl SpentbookNodeServer {
     }
 
     async fn listen_for_network_msgs(&mut self) -> Result<()> {
-
         let local_addr = self.server_endpoint.endpoint.local_addr();
         let external_addr = self.server_endpoint.endpoint.public_addr();
         info!(
@@ -155,14 +154,12 @@ impl SpentbookNodeServer {
                 let mut rng = rand::thread_rng();
 
                 match net_msg {
-                    wire::spentbook::Msg::P2p(p2p_msg) => {
-                        match p2p_msg {
-                            wire::spentbook::p2p::Msg::Peer(actor, addr) => {
-                                self.handle_peer_msg(actor, addr).await?
-                            },
-                            wire::spentbook::p2p::Msg::Dkg(msg) => {
-                                self.handle_p2p_message(msg, &mut rng).await?
-                            },
+                    wire::spentbook::Msg::P2p(p2p_msg) => match p2p_msg {
+                        wire::spentbook::p2p::Msg::Peer(actor, addr) => {
+                            self.handle_peer_msg(actor, addr).await?
+                        }
+                        wire::spentbook::p2p::Msg::Dkg(msg) => {
+                            self.handle_p2p_message(msg, &mut rng).await?
                         }
                     },
                     wire::spentbook::Msg::Wallet(wallet_msg) => {
@@ -176,8 +173,7 @@ impl SpentbookNodeServer {
                                     }
                                     wire::spentbook::wallet::request::Msg::Discover => {
                                         wire::spentbook::wallet::reply::Msg::Discover(
-                                            self
-                                                .spentbook_node
+                                            self.spentbook_node
                                                 .as_ref()
                                                 .unwrap()
                                                 .key_manager
@@ -189,12 +185,14 @@ impl SpentbookNodeServer {
                                     }
                                 };
 
-                                let m = wire::spentbook::Msg::Wallet(wire::spentbook::wallet::Msg::Reply(reply_msg));
+                                let m = wire::spentbook::Msg::Wallet(
+                                    wire::spentbook::wallet::Msg::Reply(reply_msg),
+                                );
                                 let reply_msg_bytes = Bytes::from(bincode::serialize(&m).unwrap());
-                                connection.send(reply_msg_bytes).await.into_diagnostic()?;               
-                            },
-                            _ => {},   // ignore non-requests.
-                        }                        
+                                connection.send(reply_msg_bytes).await.into_diagnostic()?;
+                            }
+                            _ => {} // ignore non-requests.
+                        }
                     }
                 }
             }
@@ -218,7 +216,8 @@ impl SpentbookNodeServer {
         msg: wire::spentbook::p2p::Msg,
         dest_addr: &SocketAddr,
     ) -> Result<()> {
-        self.send_network_msg(wire::spentbook::Msg::P2p(msg), dest_addr).await
+        self.send_network_msg(wire::spentbook::Msg::P2p(msg), dest_addr)
+            .await
     }
 
     async fn send_network_msg(

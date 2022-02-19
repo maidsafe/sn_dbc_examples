@@ -9,7 +9,7 @@
 
 use bytes::Bytes;
 use log::{debug, info, trace};
-use miette::{IntoDiagnostic, Result};
+use miette::{miette, IntoDiagnostic, Result};
 
 use sn_dbc::{KeyManager, MintNode, ReissueRequest, ReissueShare, SimpleKeyManager, SimpleSigner};
 use sn_dbc_examples::wire;
@@ -19,7 +19,7 @@ use xor_name::XorName;
 use qp2p::{self, Config, Endpoint, IncomingConnections};
 use structopt::StructOpt;
 
-use bls_dkg::KeyGen;
+use bls_dkg::{KeyGen, PublicKeySet};
 use rand_core::RngCore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -29,6 +29,10 @@ use std::net::{Ipv4Addr, SocketAddr};
 pub struct MintNodeConfig {
     /// Peer addresses (other MintNodes)
     peers: Vec<SocketAddr>,
+
+    /// address:port of spentbook node used to query spentbook public key at startup.
+    #[structopt(long, required = true)]
+    trust_spentbook: SocketAddr,
 
     /// number of MintNode peers that make up a Mint
     #[structopt(long, default_value = "3")]
@@ -51,6 +55,9 @@ struct MintNodeServer {
     peers: BTreeMap<XorName, SocketAddr>,
 
     mint_node: Option<MintNode<SimpleKeyManager>>,
+
+    spentbook_nodes: BTreeMap<XorName, SocketAddr>,
+    spentbook_pks: PublicKeySet,
 
     /// for communicating with other mintnodes
     server_endpoint: ServerEndpoint,
@@ -91,6 +98,25 @@ async fn do_main() -> Result<()> {
         incoming_connections,
     };
 
+    let client_endpoint = Endpoint::new_client(
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        Default::default(),
+    )
+    .into_diagnostic()?;
+    let msg = wire::spentbook::wallet::request::Msg::Discover;
+    let reply_msg =
+        send_spentbook_network_msg(&client_endpoint, msg, &config.trust_spentbook).await?;
+    let (spentbook_pks, spentbook_nodes) = match reply_msg {
+        wire::spentbook::wallet::reply::Msg::Discover(spentbook_pks, spentbook_nodes) => {
+            println!(
+                "got trusted spentbook public key: {:#?}",
+                spentbook_pks.public_key()
+            );
+            (spentbook_pks, spentbook_nodes)
+        }
+        _ => panic!("unexpected reply"),
+    };
+
     let my_xor_name = XorName::random();
 
     println!(
@@ -104,6 +130,8 @@ async fn do_main() -> Result<()> {
         xor_name: my_xor_name,
         peers: BTreeMap::from_iter([(my_xor_name, server_endpoint.endpoint.public_addr())]),
         mint_node: None,
+        spentbook_pks,
+        spentbook_nodes,
         server_endpoint,
         keygen: None,
     };
@@ -129,7 +157,6 @@ impl MintNodeServer {
     }
 
     async fn listen_for_network_msgs(&mut self) -> Result<()> {
-
         let local_addr = self.server_endpoint.endpoint.local_addr();
         let external_addr = self.server_endpoint.endpoint.public_addr();
         info!(
@@ -145,21 +172,18 @@ impl MintNodeServer {
             while let Some(bytes) = incoming_messages.next().await.into_diagnostic()? {
                 debug!("[Net] got network message");
 
-                let net_msg: wire::mint::Msg =
-                    bincode::deserialize(&bytes).into_diagnostic()?;
+                let net_msg: wire::mint::Msg = bincode::deserialize(&bytes).into_diagnostic()?;
 
                 debug!("[Net] received from {:?} --> {:?}", socket_addr, net_msg);
                 let mut rng = rand::thread_rng();
 
                 match net_msg {
-                    wire::mint::Msg::P2p(p2p_msg) => {
-                        match p2p_msg {
-                            wire::mint::p2p::Msg::Peer(actor, addr) => {
-                                self.handle_peer_msg(actor, addr).await?
-                            },
-                            wire::mint::p2p::Msg::Dkg(msg) => {
-                                self.handle_p2p_message(msg, &mut rng).await?
-                            },
+                    wire::mint::Msg::P2p(p2p_msg) => match p2p_msg {
+                        wire::mint::p2p::Msg::Peer(actor, addr) => {
+                            self.handle_peer_msg(actor, addr).await?
+                        }
+                        wire::mint::p2p::Msg::Dkg(msg) => {
+                            self.handle_p2p_message(msg, &mut rng).await?
                         }
                     },
                     wire::mint::Msg::Wallet(wallet_msg) => {
@@ -173,8 +197,7 @@ impl MintNodeServer {
                                     }
                                     wire::mint::wallet::request::Msg::Discover => {
                                         wire::mint::wallet::reply::Msg::Discover(
-                                            self
-                                                .mint_node
+                                            self.mint_node
                                                 .as_ref()
                                                 .unwrap()
                                                 .key_manager
@@ -185,12 +208,14 @@ impl MintNodeServer {
                                         )
                                     }
                                 };
-                                let m = wire::mint::Msg::Wallet(wire::mint::wallet::Msg::Reply(reply_msg));
+                                let m = wire::mint::Msg::Wallet(wire::mint::wallet::Msg::Reply(
+                                    reply_msg,
+                                ));
                                 let reply_msg_bytes = Bytes::from(bincode::serialize(&m).unwrap());
-                                connection.send(reply_msg_bytes).await.into_diagnostic()?;               
-                            },
-                            _ => {},   // ignore non-requests.
-                        }                        
+                                connection.send(reply_msg_bytes).await.into_diagnostic()?;
+                            }
+                            _ => {} // ignore non-requests.
+                        }
                     }
                 }
             }
@@ -207,14 +232,11 @@ impl MintNodeServer {
         msg: wire::mint::p2p::Msg,
         dest_addr: &SocketAddr,
     ) -> Result<()> {
-        self.send_network_msg(wire::mint::Msg::P2p(msg), dest_addr).await
+        self.send_network_msg(wire::mint::Msg::P2p(msg), dest_addr)
+            .await
     }
 
-    async fn send_network_msg(
-        &self,
-        msg: wire::mint::Msg,
-        dest_addr: &SocketAddr,
-    ) -> Result<()> {
+    async fn send_network_msg(&self, msg: wire::mint::Msg, dest_addr: &SocketAddr) -> Result<()> {
         // if delivering to self, use local addr rather than external to avoid
         // potential hairpinning problems.
         let addr = if *dest_addr == self.server_endpoint.endpoint.public_addr() {
@@ -261,11 +283,8 @@ impl MintNodeServer {
         } else {
             // Here we send our peer list back to the new peer.
             for (peer_actor, peer_addr) in self.peers.clone().into_iter() {
-                self.send_p2p_network_msg(
-                    wire::mint::p2p::Msg::Peer(peer_actor, peer_addr),
-                    &addr,
-                )
-                .await?;
+                self.send_p2p_network_msg(wire::mint::p2p::Msg::Peer(peer_actor, peer_addr), &addr)
+                    .await?;
             }
             self.peers.insert(actor, addr);
 
@@ -318,9 +337,12 @@ impl MintNodeServer {
                 if keygen.is_finalized() {
                     let (_, outcome) = keygen.generate_keys().unwrap();
                     println!("outcome threshold: {}", outcome.public_key_set.threshold());
-                    self.mint_node = Some(MintNode::new(SimpleKeyManager::from(
-                        SimpleSigner::from(outcome),
-                    )));
+                    let mint_node =
+                        MintNode::new(SimpleKeyManager::from(SimpleSigner::from(outcome)))
+                            .trust_spentbook_public_key(self.spentbook_pks.public_key())
+                            .into_diagnostic()?;
+
+                    self.mint_node = Some(mint_node);
                     info!("DKG finalized!");
                     info!("MintNode created!");
                 }
@@ -340,6 +362,35 @@ impl MintNodeServer {
             self.send_p2p_network_msg(msg, target_addr).await?;
         }
         Ok(())
+    }
+}
+
+async fn send_spentbook_network_msg(
+    endpoint: &Endpoint,
+    msg: wire::spentbook::wallet::request::Msg,
+    dest_addr: &SocketAddr,
+) -> Result<wire::spentbook::wallet::reply::Msg> {
+    debug!("Sending message to {:?} --> {:#?}", dest_addr, msg);
+
+    let m = wire::spentbook::Msg::Wallet(wire::spentbook::wallet::Msg::Request(msg));
+
+    // fixme: unwrap
+    let msg_bytes = bincode::serialize(&m).unwrap();
+
+    match bincode::deserialize::<wire::spentbook::Msg>(&msg_bytes) {
+        Ok(_) => {}
+        Err(e) => panic!("failed deserializing our own msg"),
+    }
+
+    let (connection, mut recv) = endpoint.connect_to(dest_addr).await.into_diagnostic()?;
+
+    connection.send(msg_bytes.into()).await.into_diagnostic()?;
+    let recv_bytes = recv.next().await.into_diagnostic()?.unwrap();
+    let net_msg: wire::spentbook::Msg = bincode::deserialize(&recv_bytes).into_diagnostic()?;
+
+    match net_msg {
+        wire::spentbook::Msg::Wallet(wire::spentbook::wallet::Msg::Reply(m)) => Ok(m),
+        _ => Err(miette!("received unexpected msg from spentbook")),
     }
 }
 
