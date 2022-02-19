@@ -146,7 +146,7 @@ impl SpentbookNodeServer {
             let socket_addr = connection.remote_address();
 
             while let Some(bytes) = incoming_messages.next().await.into_diagnostic()? {
-                debug!("[Net] got network message");
+                debug!("[Net] got network message from {}", socket_addr);
 
                 let net_msg: wire::spentbook::Msg =
                     bincode::deserialize(&bytes).into_diagnostic()?;
@@ -188,7 +188,9 @@ impl SpentbookNodeServer {
                                         )
                                     }
                                 };
-                                let reply_msg_bytes = Bytes::from(bincode::serialize(&reply_msg).unwrap());
+
+                                let m = wire::spentbook::Msg::Wallet(wire::spentbook::wallet::Msg::Reply(reply_msg));
+                                let reply_msg_bytes = Bytes::from(bincode::serialize(&m).unwrap());
                                 connection.send(reply_msg_bytes).await.into_diagnostic()?;               
                             },
                             _ => {},   // ignore non-requests.

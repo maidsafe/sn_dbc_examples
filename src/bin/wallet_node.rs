@@ -141,7 +141,7 @@ struct WalletNodeClient {
 
     wallet: Wallet,
 
-    spentbook_nodes: BTreeMap<XorName, (SocketAddr, SocketAddr)>,
+    spentbook_nodes: BTreeMap<XorName, SocketAddr>,
     spentbook_pks: Option<PublicKeySet>,
 
     mint_nodes: BTreeMap<XorName, SocketAddr>,
@@ -332,11 +332,11 @@ impl WalletNodeClient {
     }
 
     async fn join_spentbook_section(&mut self, addr: SocketAddr) -> Result<()> {
-        let msg = wire::SpentbookWalletNetworkMsg::Discover;
-        let reply_msg = self.send_spentbook_network_msg(&msg, &addr).await?;
+        let msg = wire::spentbook::wallet::request::Msg::Discover;
+        let reply_msg = self.send_spentbook_network_msg(msg, &addr).await?;
 
         match reply_msg {
-            wire::SpentbookWalletNetworkMsgReply::DiscoverReply(spentbook_pks, spentbook_nodes) => {
+            wire::spentbook::wallet::reply::Msg::Discover(spentbook_pks, spentbook_nodes) => {
                 self.spentbook_pks = Some(spentbook_pks);
                 self.spentbook_nodes = spentbook_nodes;
                 println!("got spentbook peers: {:#?}", self.spentbook_nodes);
@@ -348,14 +348,14 @@ impl WalletNodeClient {
 
     async fn broadcast_log_spent(&self, key_image: KeyImage, transaction: RingCtTransaction) -> Result<Vec<SpentProofShare>> {
 
-        let msg = wire::SpentbookWalletNetworkMsg::LogSpent(key_image, transaction);
+        let msg = wire::spentbook::wallet::request::Msg::LogSpent(key_image, transaction);
 
         let mut shares: Vec<SpentProofShare> = Default::default();
         
-        for (_xorname, (p2p_addr, wallet_addr)) in self.spentbook_nodes.iter() {
-            let reply_msg = self.send_spentbook_network_msg(&msg, &wallet_addr).await?;
+        for (_xorname, addr) in self.spentbook_nodes.iter() {
+            let reply_msg = self.send_spentbook_network_msg(msg.clone(), &addr).await?;
             let share = match reply_msg {
-                wire::SpentbookWalletNetworkMsgReply::LogSpentReply(share_result) => share_result.into_diagnostic()?,
+                wire::spentbook::wallet::reply::Msg::LogSpent(share_result) => share_result.into_diagnostic()?,
                 _ => return Err(miette!("got unexpected reply from spentbook node")),
             };
             shares.push(share);
@@ -365,14 +365,14 @@ impl WalletNodeClient {
 
     async fn broadcast_reissue(&self, reissue_request: ReissueRequest) -> Result<Vec<ReissueShare>> {
 
-        let msg = wire::MintWalletNetworkMsg::Reissue(reissue_request);
+        let msg = wire::mint::wallet::request::Msg::Reissue(reissue_request);
 
         let mut shares: Vec<ReissueShare> = Default::default();
         
         for (_xorname, addr) in self.mint_nodes.iter() {
-            let reply_msg = self.send_mint_network_msg(&msg, &addr).await?;
+            let reply_msg = self.send_mint_network_msg(msg.clone(), &addr).await?;
             let share = match reply_msg {
-                wire::MintWalletNetworkMsgReply::ReissueReply(share_result) => share_result.into_diagnostic()?,
+                wire::mint::wallet::reply::Msg::Reissue(share_result) => share_result.into_diagnostic()?,
                 _ => return Err(miette!("got unexpected reply from mint node")),
             };
             shares.push(share);
@@ -382,11 +382,11 @@ impl WalletNodeClient {
 
 
     async fn join_mint_section(&mut self, addr: SocketAddr) -> Result<()> {
-        let msg = wire::MintWalletNetworkMsg::Discover;
-        let reply_msg = self.send_mint_network_msg(&msg, &addr).await?;
+        let msg = wire::mint::wallet::request::Msg::Discover;
+        let reply_msg = self.send_mint_network_msg(msg, &addr).await?;
 
         match reply_msg {
-            wire::MintWalletNetworkMsgReply::DiscoverReply(mint_pks, mint_nodes) => {
+            wire::mint::wallet::reply::Msg::Discover(mint_pks, mint_nodes) => {
                 self.mint_pks = Some(mint_pks);
                 self.mint_nodes = mint_nodes;
                 println!("got mint peers: {:#?}", self.mint_nodes);
@@ -398,15 +398,17 @@ impl WalletNodeClient {
 
     async fn send_spentbook_network_msg(
         &self,
-        msg: &wire::SpentbookWalletNetworkMsg,
+        msg: wire::spentbook::wallet::request::Msg,
         dest_addr: &SocketAddr,
-    ) -> Result<wire::SpentbookWalletNetworkMsgReply> {
+    ) -> Result<wire::spentbook::wallet::reply::Msg> {
         debug!("Sending message to {:?} --> {:#?}", dest_addr, msg);
 
-        // fixme: unwrap
-        let msg = bincode::serialize(msg).unwrap();
+        let m = wire::spentbook::Msg::Wallet(wire::spentbook::wallet::Msg::Request(msg));
 
-        match bincode::deserialize::<wire::SpentbookWalletNetworkMsg>(&msg) {
+        // fixme: unwrap
+        let msg_bytes = bincode::serialize(&m).unwrap();
+
+        match bincode::deserialize::<wire::spentbook::Msg>(&msg_bytes) {
             Ok(_) => {},
             Err(e) => panic!("failed deserializing our own msg"),
         }
@@ -417,23 +419,35 @@ impl WalletNodeClient {
             .await
             .into_diagnostic()?;
 
-        connection.send(msg.into()).await.into_diagnostic()?;
-        let bytes = recv.next().await.into_diagnostic()?.unwrap();
-        let net_msg: wire::SpentbookWalletNetworkMsgReply =
-            bincode::deserialize(&bytes).into_diagnostic()?;
+        connection.send(msg_bytes.into()).await.into_diagnostic()?;
+        let recv_bytes = recv.next().await.into_diagnostic()?.unwrap();
+        let net_msg: wire::spentbook::Msg =
+            bincode::deserialize(&recv_bytes).into_diagnostic()?;
 
-        Ok(net_msg)
+        match net_msg {
+            wire::spentbook::Msg::Wallet(wire::spentbook::wallet::Msg::Reply(m)) => {
+                Ok(m)
+            },
+            _ => Err(miette!("received unexpected msg from spentbook")),
+        }
     }
 
     async fn send_mint_network_msg(
         &self,
-        msg: &wire::MintWalletNetworkMsg,
+        msg: wire::mint::wallet::request::Msg,
         dest_addr: &SocketAddr,
-    ) -> Result<wire::MintWalletNetworkMsgReply> {
-        debug!("Sending message to {:?} --> {:?}", dest_addr, msg);
+    ) -> Result<wire::mint::wallet::reply::Msg> {
+        debug!("Sending message to {:?} --> {:#?}", dest_addr, msg);
+
+        let m = wire::mint::Msg::Wallet(wire::mint::wallet::Msg::Request(msg));
 
         // fixme: unwrap
-        let msg = bincode::serialize(msg).unwrap();
+        let msg_bytes = bincode::serialize(&m).unwrap();
+
+        match bincode::deserialize::<wire::mint::Msg>(&msg_bytes) {
+            Ok(_) => {},
+            Err(e) => panic!("failed deserializing our own msg"),
+        }
 
         let (connection, mut recv) = self
             .wallet_endpoint
@@ -441,14 +455,20 @@ impl WalletNodeClient {
             .await
             .into_diagnostic()?;
 
-        connection.send(msg.into()).await.into_diagnostic()?;
-        let bytes = recv.next().await.into_diagnostic()?.unwrap();
-        let net_msg: wire::MintWalletNetworkMsgReply =
-            bincode::deserialize(&bytes).into_diagnostic()?;
+        connection.send(msg_bytes.into()).await.into_diagnostic()?;
+        let recv_bytes = recv.next().await.into_diagnostic()?.unwrap();
+        let net_msg: wire::mint::Msg =
+            bincode::deserialize(&recv_bytes).into_diagnostic()?;
 
-        Ok(net_msg)
+        match net_msg {
+            wire::mint::Msg::Wallet(wire::mint::wallet::Msg::Reply(m)) => {
+                Ok(m)
+            },
+            _ => Err(miette!("received unexpected msg from mint")),
+        }
     }
 }
+
 
 /// displays a welcome logo/banner for the app.
 // generated by: https://patorjk.com/software/taag/

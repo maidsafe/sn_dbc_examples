@@ -10,7 +10,7 @@
 pub mod spentbook {
     pub mod p2p {
 
-        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub enum Msg {
             Peer(xor_name::XorName, std::net::SocketAddr),
             Dkg(bls_dkg::message::Message),
@@ -20,7 +20,7 @@ pub mod spentbook {
     pub mod wallet {
 
         pub mod request {
-            #[derive(Debug, serde::Serialize, serde::Deserialize)]
+            #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
             pub enum Msg {
                 Discover,
                 LogSpent(sn_dbc::KeyImage, blst_ringct::ringct::RingCtTransaction),
@@ -29,21 +29,21 @@ pub mod spentbook {
 
         pub mod reply {
             #[allow(clippy::large_enum_variant)]
-            #[derive(Debug, serde::Serialize, serde::Deserialize)]
+            #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
             pub enum Msg {
                 Discover(bls_dkg::PublicKeySet, std::collections::BTreeMap<xor_name::XorName, std::net::SocketAddr>),
                 LogSpent(sn_dbc::Result<sn_dbc::SpentProofShare>),
             }
         }
 
-        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub enum Msg {
             Request(request::Msg),
             Reply(reply::Msg),
         }
     }
 
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub enum Msg {
         Wallet(wallet::Msg),
         P2p(p2p::Msg)
@@ -54,7 +54,7 @@ pub mod mint {
 
     pub mod p2p {
 
-        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub enum Msg {
             Peer(xor_name::XorName, std::net::SocketAddr),
             Dkg(bls_dkg::message::Message),
@@ -65,7 +65,7 @@ pub mod mint {
     pub mod wallet {
 
         pub mod request {
-            #[derive(Debug, serde::Serialize, serde::Deserialize)]
+            #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
             pub enum Msg {
                 Discover,
                 Reissue(sn_dbc::ReissueRequest),
@@ -73,28 +73,28 @@ pub mod mint {
         }
 
         pub mod reply {
-            #[derive(Debug, serde::Serialize, serde::Deserialize)]
+            #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
             pub enum Msg {
                 Discover(bls_dkg::PublicKeySet, std::collections::BTreeMap<xor_name::XorName, std::net::SocketAddr>),
                 Reissue(sn_dbc::Result<sn_dbc::ReissueShare>),
             }
         }
 
-        #[derive(Debug, serde::Serialize, serde::Deserialize)]
+        #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub enum Msg {
             Request(request::Msg),
             Reply(reply::Msg)
         }        
     }
 
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub enum Msg {
         Wallet(wallet::Msg),
         P2p(p2p::Msg)
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Msg {
     Spentbook(spentbook::Msg),
     Mint(spentbook::Msg),
