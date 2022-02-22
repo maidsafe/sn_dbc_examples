@@ -24,9 +24,10 @@ futures = "0.3.17"
 bytes = "1.1.0"
 blst_ringct = {git="https://github.com/maidsafe/blst-ringct", features=["serde"]}
 rustyline = "9.0.0"
-chrono = "0.4.19"
+chrono = {version = "0.4.19", features = ["serde"]}
 blsttc = "3.4.0"
 hex = "0.4.3"
+termios = "0.3.3"
 
 [dependencies.qp2p]
 version = "0.28.0"
