@@ -163,35 +163,32 @@ impl SpentbookNodeServer {
                         }
                     },
                     wire::spentbook::Msg::Wallet(wallet_msg) => {
-                        match wallet_msg {
-                            wire::spentbook::wallet::Msg::Request(request_msg) => {
-                                let reply_msg = match request_msg {
-                                    wire::spentbook::wallet::request::Msg::LogSpent(k, t) => {
-                                        wire::spentbook::wallet::reply::Msg::LogSpent(
-                                            self.handle_log_spent_request(k, t).await,
-                                        )
-                                    }
-                                    wire::spentbook::wallet::request::Msg::Discover => {
-                                        wire::spentbook::wallet::reply::Msg::Discover(
-                                            self.spentbook_node
-                                                .as_ref()
-                                                .unwrap()
-                                                .key_manager
-                                                .public_key_set()
-                                                .unwrap()
-                                                .clone(),
-                                            self.peers.clone(),
-                                        )
-                                    }
-                                };
+                        if let wire::spentbook::wallet::Msg::Request(request_msg) = wallet_msg {
+                            let reply_msg = match request_msg {
+                                wire::spentbook::wallet::request::Msg::LogSpent(k, t) => {
+                                    wire::spentbook::wallet::reply::Msg::LogSpent(
+                                        self.handle_log_spent_request(k, t).await,
+                                    )
+                                }
+                                wire::spentbook::wallet::request::Msg::Discover => {
+                                    wire::spentbook::wallet::reply::Msg::Discover(
+                                        self.spentbook_node
+                                            .as_ref()
+                                            .unwrap()
+                                            .key_manager
+                                            .public_key_set()
+                                            .unwrap()
+                                            .clone(),
+                                        self.peers.clone(),
+                                    )
+                                }
+                            };
 
-                                let m = wire::spentbook::Msg::Wallet(
-                                    wire::spentbook::wallet::Msg::Reply(reply_msg),
-                                );
-                                let reply_msg_bytes = Bytes::from(bincode::serialize(&m).unwrap());
-                                connection.send(reply_msg_bytes).await.into_diagnostic()?;
-                            }
-                            _ => {} // ignore non-requests.
+                            let m = wire::spentbook::Msg::Wallet(
+                                wire::spentbook::wallet::Msg::Reply(reply_msg),
+                            );
+                            let reply_msg_bytes = Bytes::from(bincode::serialize(&m).unwrap());
+                            connection.send(reply_msg_bytes).await.into_diagnostic()?;
                         }
                     }
                 }

@@ -56,7 +56,7 @@ struct MintNodeServer {
 
     mint_node: Option<MintNode<SimpleKeyManager>>,
 
-    spentbook_nodes: BTreeMap<XorName, SocketAddr>,
+    // spentbook_nodes: BTreeMap<XorName, SocketAddr>,
     spentbook_pks: PublicKeySet,
 
     /// for communicating with other mintnodes
@@ -106,7 +106,7 @@ async fn do_main() -> Result<()> {
     let msg = wire::spentbook::wallet::request::Msg::Discover;
     let reply_msg =
         send_spentbook_network_msg(&client_endpoint, msg, &config.trust_spentbook).await?;
-    let (spentbook_pks, spentbook_nodes) = match reply_msg {
+    let (spentbook_pks, _spentbook_nodes) = match reply_msg {
         wire::spentbook::wallet::reply::Msg::Discover(spentbook_pks, spentbook_nodes) => {
             println!(
                 "got trusted spentbook public key: {:#?}",
@@ -131,7 +131,7 @@ async fn do_main() -> Result<()> {
         peers: BTreeMap::from_iter([(my_xor_name, server_endpoint.endpoint.public_addr())]),
         mint_node: None,
         spentbook_pks,
-        spentbook_nodes,
+        // spentbook_nodes,
         server_endpoint,
         keygen: None,
     };
@@ -187,34 +187,30 @@ impl MintNodeServer {
                         }
                     },
                     wire::mint::Msg::Wallet(wallet_msg) => {
-                        match wallet_msg {
-                            wire::mint::wallet::Msg::Request(request_msg) => {
-                                let reply_msg = match request_msg {
-                                    wire::mint::wallet::request::Msg::Reissue(rr) => {
-                                        wire::mint::wallet::reply::Msg::Reissue(
-                                            self.handle_reissue_request(rr).await,
-                                        )
-                                    }
-                                    wire::mint::wallet::request::Msg::Discover => {
-                                        wire::mint::wallet::reply::Msg::Discover(
-                                            self.mint_node
-                                                .as_ref()
-                                                .unwrap()
-                                                .key_manager
-                                                .public_key_set()
-                                                .unwrap()
-                                                .clone(),
-                                            self.peers.clone(),
-                                        )
-                                    }
-                                };
-                                let m = wire::mint::Msg::Wallet(wire::mint::wallet::Msg::Reply(
-                                    reply_msg,
-                                ));
-                                let reply_msg_bytes = Bytes::from(bincode::serialize(&m).unwrap());
-                                connection.send(reply_msg_bytes).await.into_diagnostic()?;
-                            }
-                            _ => {} // ignore non-requests.
+                        if let wire::mint::wallet::Msg::Request(request_msg) = wallet_msg {
+                            let reply_msg = match request_msg {
+                                wire::mint::wallet::request::Msg::Reissue(rr) => {
+                                    wire::mint::wallet::reply::Msg::Reissue(
+                                        self.handle_reissue_request(rr).await,
+                                    )
+                                }
+                                wire::mint::wallet::request::Msg::Discover => {
+                                    wire::mint::wallet::reply::Msg::Discover(
+                                        self.mint_node
+                                            .as_ref()
+                                            .unwrap()
+                                            .key_manager
+                                            .public_key_set()
+                                            .unwrap()
+                                            .clone(),
+                                        self.peers.clone(),
+                                    )
+                                }
+                            };
+                            let m =
+                                wire::mint::Msg::Wallet(wire::mint::wallet::Msg::Reply(reply_msg));
+                            let reply_msg_bytes = Bytes::from(bincode::serialize(&m).unwrap());
+                            connection.send(reply_msg_bytes).await.into_diagnostic()?;
                         }
                     }
                 }
@@ -377,10 +373,10 @@ async fn send_spentbook_network_msg(
     // fixme: unwrap
     let msg_bytes = bincode::serialize(&m).unwrap();
 
-    match bincode::deserialize::<wire::spentbook::Msg>(&msg_bytes) {
-        Ok(_) => {}
-        Err(e) => panic!("failed deserializing our own msg"),
-    }
+    // match bincode::deserialize::<wire::spentbook::Msg>(&msg_bytes) {
+    //     Ok(_) => {}
+    //     Err(_e) => panic!("failed deserializing our own msg"),
+    // }
 
     let (connection, mut recv) = endpoint.connect_to(dest_addr).await.into_diagnostic()?;
 

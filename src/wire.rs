@@ -39,6 +39,7 @@ pub mod spentbook {
             }
         }
 
+        #[allow(clippy::large_enum_variant)]
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
         pub enum Msg {
             Request(request::Msg),
@@ -46,6 +47,7 @@ pub mod spentbook {
         }
     }
 
+    #[allow(clippy::large_enum_variant)]
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub enum Msg {
         Wallet(wallet::Msg),
@@ -92,6 +94,7 @@ pub mod mint {
         }
     }
 
+    #[allow(clippy::large_enum_variant)]
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub enum Msg {
         Wallet(wallet::Msg),
