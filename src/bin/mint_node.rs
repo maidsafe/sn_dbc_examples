@@ -20,7 +20,7 @@ use qp2p::{self, Config, Endpoint, IncomingConnections};
 use structopt::StructOpt;
 
 use bls_dkg::{KeyGen, PublicKeySet};
-use rand_core::RngCore;
+use rand8::RngCore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -117,7 +117,8 @@ async fn do_main() -> Result<()> {
         _ => panic!("unexpected reply"),
     };
 
-    let my_xor_name = XorName::random();
+    let mut rng = rand8::thread_rng();
+    let my_xor_name = XorName::random(&mut rng);
 
     println!(
         "Mint [{}] listening for messages at: {}",
@@ -175,7 +176,7 @@ impl MintNodeServer {
                 let net_msg: wire::mint::Msg = bincode::deserialize(&bytes).into_diagnostic()?;
 
                 debug!("[Net] received from {:?} --> {:?}", socket_addr, net_msg);
-                let mut rng = rand::thread_rng();
+                let mut rng = rand8::thread_rng();
 
                 match net_msg {
                     wire::mint::Msg::P2p(p2p_msg) => match p2p_msg {

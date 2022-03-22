@@ -23,7 +23,7 @@ use qp2p::{self, Config, Endpoint, IncomingConnections};
 use structopt::StructOpt;
 
 use bls_dkg::KeyGen;
-use rand_core::RngCore;
+use rand8::RngCore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -94,7 +94,8 @@ async fn do_main() -> Result<()> {
         incoming_connections,
     };
 
-    let my_xor_name = XorName::random();
+    let mut rng = rand8::thread_rng();
+    let my_xor_name = XorName::random(&mut rng);
 
     println!(
         "Spentbook [{}] listening for messages at: {}",
@@ -151,7 +152,7 @@ impl SpentbookNodeServer {
                     bincode::deserialize(&bytes).into_diagnostic()?;
 
                 debug!("[Net] received from {:?} --> {:?}", socket_addr, net_msg);
-                let mut rng = rand::thread_rng();
+                let mut rng = rand8::thread_rng();
 
                 match net_msg {
                     wire::spentbook::Msg::P2p(p2p_msg) => match p2p_msg {

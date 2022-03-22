@@ -11,7 +11,6 @@ use log::debug;
 use miette::{miette, IntoDiagnostic, Result};
 // use serde::{Deserialize, Serialize};
 use bls_dkg::PublicKeySet;
-use blst_ringct::blstrs::group::Curve;
 use blsttc::{serde_impl::SerdeSecret, PublicKey, SecretKey};
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
@@ -23,8 +22,8 @@ use xor_name::XorName;
 
 use blst_ringct::ringct::RingCtTransaction;
 use sn_dbc::{
-    Amount, AmountSecrets, Dbc, DbcBuilder, GenesisMaterial, KeyImage, Output, Owner, OwnerOnce,
-    ReissueRequest, ReissueRequestBuilder, ReissueShare, SpentProofShare, TransactionBuilder,
+    Amount, AmountSecrets, Dbc, GenesisMaterial, KeyImage, Owner, OwnerOnce,
+    ReissueRequest, ReissueShare, SpentProofShare, TransactionBuilder,
 };
 
 use qp2p::{self, Config, Endpoint};
@@ -432,11 +431,8 @@ impl WalletNodeClient {
                 break;
             }
         }
-        tx_builder = tx_builder.add_output(
-            Output {
-                amount: spend_amount,
-                public_key: recip_owner_once.as_owner().public_key_blst(),
-            },
+        tx_builder = tx_builder.add_output_by_amount(
+            spend_amount,
             recip_owner_once.clone(),
         );
 
@@ -447,23 +443,18 @@ impl WalletNodeClient {
             let change_owner_once =
                 OwnerOnce::from_owner_base(Owner::from(secret_key.public_key()), &mut rng8);
 
-            tx_builder = tx_builder.add_output(
-                Output {
-                    amount: change,
-                    public_key: change_owner_once.as_owner().public_key_blst(),
-                },
+            tx_builder = tx_builder.add_output_by_amount(
+                change,
                 change_owner_once,
             );
         };
-        let (tx, revealed_commitments, ringct_material, output_owner_map) =
+        let (mut rr_builder, dbc_builder, _ringct_material) =
             tx_builder.build(&mut rng8).into_diagnostic()?;
 
-        let mut rr_builder = ReissueRequestBuilder::new(tx.clone());
-        for input in ringct_material.inputs.iter() {
-            let key_image = input.true_input.key_image().to_affine().into();
+        for (key_image, tx) in rr_builder.inputs() {
+            let spent_proof_shares =
+                self.broadcast_log_spent(key_image, tx).await?;
             let dbc_hash = inputs_hash.get(&key_image).unwrap();
-            let spent_proof_shares: Vec<SpentProofShare> =
-                self.broadcast_log_spent(key_image, tx.clone()).await?;
             self.wallet.mark_spent(dbc_hash);
             rr_builder = rr_builder.add_spent_proof_shares(spent_proof_shares);
         }
@@ -471,7 +462,7 @@ impl WalletNodeClient {
 
         let reissue_shares: Vec<ReissueShare> = self.broadcast_reissue(reissue_request).await?;
 
-        let dbcs = DbcBuilder::new(revealed_commitments, output_owner_map)
+        let dbcs = dbc_builder
             .add_reissue_shares(reissue_shares)
             .build()
             .into_diagnostic()?;
@@ -550,7 +541,7 @@ impl WalletNodeClient {
         let mut rng8 = rand8::thread_rng();
 
         let genesis_material = GenesisMaterial::default();
-        let (genesis_tx, revealed_commitments, _ringct_material, output_owner_map) =
+        let (mut rr_builder, dbc_builder, _ringct_material) =
             TransactionBuilder::default()
                 .add_input(genesis_material.ringct_material.inputs[0].clone())
                 .add_output(
@@ -560,13 +551,12 @@ impl WalletNodeClient {
                 .build(&mut rng8)
                 .into_diagnostic()?;
 
-        let spent_proof_shares: Vec<SpentProofShare> = self
-            .broadcast_log_spent(genesis_material.input_key_image.clone(), genesis_tx.clone())
-            .await?;
-
-        let mut rr_builder = ReissueRequestBuilder::new(genesis_tx.clone());
-        for share in spent_proof_shares.into_iter() {
-            rr_builder = rr_builder.add_spent_proof_share(share);
+        for (key_image, tx) in rr_builder.inputs() {
+            let spent_proof_shares =
+                self.broadcast_log_spent(key_image, tx).await?;
+            // let dbc_hash = inputs_hash.get(&key_image).unwrap();
+            // self.wallet.mark_spent(dbc_hash);
+            rr_builder = rr_builder.add_spent_proof_shares(spent_proof_shares);
         }
         let reissue_request = rr_builder.build().into_diagnostic()?;
 
@@ -577,7 +567,7 @@ impl WalletNodeClient {
         let reissue_shares: Vec<ReissueShare> = self.broadcast_reissue(reissue_request).await?;
 
         let (genesis_dbc, _owner_once, _amount_secrets) =
-            DbcBuilder::new(revealed_commitments, output_owner_map)
+            dbc_builder
                 .add_reissue_shares(reissue_shares)
                 .build()
                 .into_diagnostic()?
