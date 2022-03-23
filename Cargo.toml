@@ -7,29 +7,24 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.44"
-sn_dbc = {git="https://github.com/dan-da/sn_dbc.git", features = ["dkg", "serdes"], branch="decouple_deps"}
+sn_dbc = {git="https://github.com/dan-da/sn_dbc.git", features = ["serdes"], branch="decouple_deps"}
 structopt = "0.3.25"
 tokio = { version = "1.16.1", features = ["rt-multi-thread", "macros", "io-util"] }
-xor_name = {git = "https://github.com/iancoleman/xor_name", branch = "remove_osrng"}
-bls_dkg = {git = "https://github.com/dan-da/bls_dkg.git", branch = "sn_dbc_integration"}
-rand8 = {package = "rand", version = "0.8"}
-rand_core = "~0.5.1"
 serde = "1.0.130"
 log = "0.4.14"
 env_logger = "0.9.0"
 bincode = "1.3.3"
 futures = "0.3.17"
 bytes = "1.1.0"
-blst_ringct = {git="https://github.com/grumbach/blst-ringct", branch = "generic_constructors", features=["serde"]}
 rustyline = "9.0.0"
 chrono = {version = "0.4.19", features = ["serde"]}
-blsttc = {git = "https://github.com/grumbach/blsttc", branch = "generic_impls"}
 hex = "0.4.3"
 termios = "0.3.3"
+bls_dkg = "0.10.0"
+xor_name = "4.0.1"
 
 [dependencies.qp2p]
-version = "0.28.0"
-path="/home/danda/dev/maidsafe/qp2p"
+version = "0.28.5"
 features = ["structopt"]
 
 [dependencies.miette]

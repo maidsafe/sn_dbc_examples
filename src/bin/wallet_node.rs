@@ -11,7 +11,6 @@ use log::debug;
 use miette::{miette, IntoDiagnostic, Result};
 // use serde::{Deserialize, Serialize};
 use bls_dkg::PublicKeySet;
-use blsttc::{serde_impl::SerdeSecret, PublicKey, SecretKey};
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
@@ -20,10 +19,10 @@ use sn_dbc_examples::wire;
 use std::fmt;
 use xor_name::XorName;
 
-use blst_ringct::ringct::RingCtTransaction;
 use sn_dbc::{
-    Amount, AmountSecrets, Dbc, GenesisMaterial, KeyImage, Owner, OwnerOnce,
-    ReissueRequest, ReissueShare, SpentProofShare, TransactionBuilder,
+    blsttc::{serde_impl::SerdeSecret, PublicKey, SecretKey, SecretKeySet},
+    rng, Amount, AmountSecrets, Dbc, GenesisMaterial, KeyImage, KeyManager, Owner, OwnerOnce,
+    RingCtTransaction, SimpleKeyManager, SimpleSigner, SpentProofShare, TransactionBuilder,
 };
 
 use qp2p::{self, Config, Endpoint};
@@ -44,10 +43,6 @@ pub struct WalletNodeConfig {
     /// address:port of spentbook node used to query spentbook peers upon startup
     #[structopt(long)]
     join_spentbook: Option<SocketAddr>,
-
-    /// address:port of mint node used to query mint peers upon startup
-    #[structopt(long)]
-    join_mint: Option<SocketAddr>,
 
     #[structopt(flatten)]
     wallet_qp2p_opts: Config,
@@ -185,9 +180,6 @@ struct WalletNodeClient {
     spentbook_nodes: BTreeMap<XorName, SocketAddr>,
     spentbook_pks: Option<PublicKeySet>,
 
-    mint_nodes: BTreeMap<XorName, SocketAddr>,
-    mint_pks: Option<PublicKeySet>,
-
     /// for communicating with others
     wallet_endpoint: Endpoint,
 }
@@ -229,8 +221,6 @@ async fn do_main() -> Result<()> {
         wallet: Wallet::load().await.unwrap_or_default(),
         spentbook_nodes: Default::default(),
         spentbook_pks: None,
-        mint_nodes: Default::default(),
-        mint_pks: None,
         wallet_endpoint,
     };
 
@@ -269,7 +259,6 @@ impl WalletNodeClient {
                         "keys" => self.cli_keys(),
                         "reissue" => self.cli_reissue().await,
                         "unspent" => self.cli_unspent(),
-                        // "reissue" => self.cli_reissue(),
                         // "reissue_auto" => self.cli_reissue_auto(),
                         // "validate" => self.cli_validate(),
                         "newkey" => self.cli_newkey(),
@@ -312,15 +301,12 @@ impl WalletNodeClient {
         if let Some(addr) = self.config.join_spentbook {
             self.join_spentbook_section(addr).await?;
         }
-        if let Some(addr) = self.config.join_mint {
-            self.join_mint_section(addr).await?;
-        }
 
         Ok(())
     }
 
     fn cli_newkey(&mut self) -> Result<()> {
-        let secret_key = blsttc::SecretKey::random();
+        let secret_key = crate::SecretKey::random();
 
         println!(
             "Receive PublicKey: {}",
@@ -393,7 +379,7 @@ impl WalletNodeClient {
             loop {
                 match readline_prompt("[b]earer or [o]wned: ")?.as_str() {
                     "b" => {
-                        let secret_key = blsttc::SecretKey::random();
+                        let secret_key = crate::SecretKey::random();
                         self.wallet.addkey(secret_key.clone());
                         break Owner::from(secret_key);
                     }
@@ -410,8 +396,8 @@ impl WalletNodeClient {
                 }
             }
         };
-        let mut rng8 = rand8::thread_rng();
-        let recip_owner_once = OwnerOnce::from_owner_base(owner_base, &mut rng8);
+        let mut rng = rng::thread_rng();
+        let recip_owner_once = OwnerOnce::from_owner_base(owner_base, &mut rng);
 
         let unspent = self.unspent()?;
         let mut tx_builder = TransactionBuilder::default();
@@ -424,47 +410,35 @@ impl WalletNodeClient {
                 dinfo.dbc.hash(),
             );
             tx_builder = tx_builder
-                .add_input_dbc(&dinfo.dbc, secret_key, vec![], &mut rng8)
+                .add_input_dbc(&dinfo.dbc, secret_key, vec![], &mut rng)
                 .into_diagnostic()?;
 
             if tx_builder.inputs_amount_sum() >= spend_amount {
                 break;
             }
         }
-        tx_builder = tx_builder.add_output_by_amount(
-            spend_amount,
-            recip_owner_once.clone(),
-        );
+        tx_builder = tx_builder.add_output_by_amount(spend_amount, recip_owner_once.clone());
 
         if tx_builder.inputs_amount_sum() > tx_builder.outputs_amount_sum() {
             let change = tx_builder.inputs_amount_sum() - tx_builder.outputs_amount_sum();
             let secret_key = SecretKey::random();
             self.wallet.addkey(secret_key.clone());
             let change_owner_once =
-                OwnerOnce::from_owner_base(Owner::from(secret_key.public_key()), &mut rng8);
+                OwnerOnce::from_owner_base(Owner::from(secret_key.public_key()), &mut rng);
 
-            tx_builder = tx_builder.add_output_by_amount(
-                change,
-                change_owner_once,
-            );
+            tx_builder = tx_builder.add_output_by_amount(change, change_owner_once);
         };
-        let (mut rr_builder, dbc_builder, _ringct_material) =
-            tx_builder.build(&mut rng8).into_diagnostic()?;
+        let mut dbc_builder = tx_builder.build(&mut rng).into_diagnostic()?;
 
-        for (key_image, tx) in rr_builder.inputs() {
-            let spent_proof_shares =
-                self.broadcast_log_spent(key_image, tx).await?;
+        for (key_image, tx) in dbc_builder.inputs() {
+            let spent_proof_shares = self.broadcast_log_spent(key_image, tx).await?;
             let dbc_hash = inputs_hash.get(&key_image).unwrap();
             self.wallet.mark_spent(dbc_hash);
-            rr_builder = rr_builder.add_spent_proof_shares(spent_proof_shares);
+            dbc_builder = dbc_builder.add_spent_proof_shares(spent_proof_shares);
         }
-        let reissue_request = rr_builder.build().into_diagnostic()?;
-
-        let reissue_shares: Vec<ReissueShare> = self.broadcast_reissue(reissue_request).await?;
 
         let dbcs = dbc_builder
-            .add_reissue_shares(reissue_shares)
-            .build()
+            .build(&self.gen_key_manager())
             .into_diagnostic()?;
 
         let mut iter = dbcs.into_iter();
@@ -494,6 +468,16 @@ impl WalletNodeClient {
         println!("note: change DBC deposited to our wallet.");
 
         Ok(())
+    }
+
+    fn gen_key_manager(&self) -> SimpleKeyManager {
+        let sks = SecretKeySet::random(0, &mut rng::thread_rng());
+        let mut key_manager = SimpleKeyManager::from(SimpleSigner::new(
+            sks.public_keys(),
+            (0, sks.secret_key_share(0)),
+        ));
+        let _ignored = key_manager.add_known_key(self.spentbook_pks.as_ref().unwrap().public_key());
+        key_manager
     }
 
     /*
@@ -538,42 +522,31 @@ impl WalletNodeClient {
         println!("Attempting to issue the Genesis Dbc...");
 
         // note: rng is necessary for RingCtMaterial::sign().
-        let mut rng8 = rand8::thread_rng();
+        let mut rng = rng::thread_rng();
 
         let genesis_material = GenesisMaterial::default();
-        let (mut rr_builder, dbc_builder, _ringct_material) =
-            TransactionBuilder::default()
-                .add_input(genesis_material.ringct_material.inputs[0].clone())
-                .add_output(
-                    genesis_material.ringct_material.outputs[0].clone(),
-                    genesis_material.owner_once.clone(),
-                )
-                .build(&mut rng8)
-                .into_diagnostic()?;
+        let mut dbc_builder = TransactionBuilder::default()
+            .add_input(genesis_material.ringct_material.inputs[0].clone())
+            .add_output(
+                genesis_material.ringct_material.outputs[0].clone(),
+                genesis_material.owner_once.clone(),
+            )
+            .build(&mut rng)
+            .into_diagnostic()?;
 
-        for (key_image, tx) in rr_builder.inputs() {
-            let spent_proof_shares =
-                self.broadcast_log_spent(key_image, tx).await?;
+        for (key_image, tx) in dbc_builder.inputs() {
+            let spent_proof_shares = self.broadcast_log_spent(key_image, tx).await?;
             // let dbc_hash = inputs_hash.get(&key_image).unwrap();
             // self.wallet.mark_spent(dbc_hash);
-            rr_builder = rr_builder.add_spent_proof_shares(spent_proof_shares);
+            dbc_builder = dbc_builder.add_spent_proof_shares(spent_proof_shares);
         }
-        let reissue_request = rr_builder.build().into_diagnostic()?;
 
-        // let reissue_request = ReissueRequestBuilder::new(genesis_tx.clone())
-        //     .add_spent_proof_shares(spent_proof_shares)
-        //     .build().into_diagnostic()?;
-
-        let reissue_shares: Vec<ReissueShare> = self.broadcast_reissue(reissue_request).await?;
-
-        let (genesis_dbc, _owner_once, _amount_secrets) =
-            dbc_builder
-                .add_reissue_shares(reissue_shares)
-                .build()
-                .into_diagnostic()?
-                .into_iter()
-                .next()
-                .unwrap();
+        let (genesis_dbc, _owner_once, _amount_secrets) = dbc_builder
+            .build(&self.gen_key_manager())
+            .into_diagnostic()?
+            .into_iter()
+            .next()
+            .unwrap();
 
         self.wallet
             .add_dbc(genesis_dbc, Some("Genesis Dbc".to_string()), false)?;
@@ -679,42 +652,6 @@ impl WalletNodeClient {
         Ok(shares)
     }
 
-    async fn broadcast_reissue(
-        &self,
-        reissue_request: ReissueRequest,
-    ) -> Result<Vec<ReissueShare>> {
-        let msg = wire::mint::wallet::request::Msg::Reissue(reissue_request);
-
-        let mut shares: Vec<ReissueShare> = Default::default();
-
-        for (_xorname, addr) in self.mint_nodes.iter() {
-            let reply_msg = self.send_mint_network_msg(msg.clone(), addr).await?;
-            let share = match reply_msg {
-                wire::mint::wallet::reply::Msg::Reissue(share_result) => {
-                    share_result.into_diagnostic()?
-                }
-                _ => return Err(miette!("got unexpected reply from mint node")),
-            };
-            shares.push(share);
-        }
-        Ok(shares)
-    }
-
-    async fn join_mint_section(&mut self, addr: SocketAddr) -> Result<()> {
-        let msg = wire::mint::wallet::request::Msg::Discover;
-        let reply_msg = self.send_mint_network_msg(msg, &addr).await?;
-
-        match reply_msg {
-            wire::mint::wallet::reply::Msg::Discover(mint_pks, mint_nodes) => {
-                self.mint_pks = Some(mint_pks);
-                self.mint_nodes = mint_nodes;
-                println!("got mint peers: {:#?}", self.mint_nodes);
-            }
-            _ => panic!("unexpected reply"),
-        }
-        Ok(())
-    }
-
     async fn send_spentbook_network_msg(
         &self,
         msg: wire::spentbook::wallet::request::Msg,
@@ -726,11 +663,6 @@ impl WalletNodeClient {
 
         // fixme: unwrap
         let msg_bytes = bincode::serialize(&m).unwrap();
-
-        // match bincode::deserialize::<wire::spentbook::Msg>(&msg_bytes) {
-        //     Ok(_) => {}
-        //     Err(e) => panic!("failed deserializing our own msg"),
-        // }
 
         let (connection, mut recv) = self
             .wallet_endpoint
@@ -745,39 +677,6 @@ impl WalletNodeClient {
         match net_msg {
             wire::spentbook::Msg::Wallet(wire::spentbook::wallet::Msg::Reply(m)) => Ok(m),
             _ => Err(miette!("received unexpected msg from spentbook")),
-        }
-    }
-
-    async fn send_mint_network_msg(
-        &self,
-        msg: wire::mint::wallet::request::Msg,
-        dest_addr: &SocketAddr,
-    ) -> Result<wire::mint::wallet::reply::Msg> {
-        debug!("Sending message to {:?} --> {:#?}", dest_addr, msg);
-
-        let m = wire::mint::Msg::Wallet(wire::mint::wallet::Msg::Request(msg));
-
-        // fixme: unwrap
-        let msg_bytes = bincode::serialize(&m).unwrap();
-
-        // match bincode::deserialize::<wire::mint::Msg>(&msg_bytes) {
-        //     Ok(_) => {},
-        //     Err(e) => panic!("failed deserializing our own msg"),
-        // }
-
-        let (connection, mut recv) = self
-            .wallet_endpoint
-            .connect_to(dest_addr)
-            .await
-            .into_diagnostic()?;
-
-        connection.send(msg_bytes.into()).await.into_diagnostic()?;
-        let recv_bytes = recv.next().await.into_diagnostic()?.unwrap();
-        let net_msg: wire::mint::Msg = bincode::deserialize(&recv_bytes).into_diagnostic()?;
-
-        match net_msg {
-            wire::mint::Msg::Wallet(wire::mint::wallet::Msg::Reply(m)) => Ok(m),
-            _ => Err(miette!("received unexpected msg from mint")),
         }
     }
 }

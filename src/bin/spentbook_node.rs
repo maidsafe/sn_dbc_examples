@@ -11,9 +11,9 @@ use bytes::Bytes;
 use log::{debug, info, trace};
 use miette::{IntoDiagnostic, Result};
 
-use blst_ringct::ringct::RingCtTransaction;
 use sn_dbc::{
-    KeyImage, KeyManager, SimpleKeyManager, SimpleSigner, SpentBookNodeMock, SpentProofShare,
+    rand::RngCore, rng, KeyImage, KeyManager, RingCtTransaction, SimpleKeyManager, SimpleSigner,
+    SpentBookNodeMock, SpentProofShare,
 };
 use sn_dbc_examples::wire;
 
@@ -23,7 +23,6 @@ use qp2p::{self, Config, Endpoint, IncomingConnections};
 use structopt::StructOpt;
 
 use bls_dkg::KeyGen;
-use rand8::RngCore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, SocketAddr};
 
@@ -55,7 +54,7 @@ struct SpentbookNodeServer {
 
     spentbook_node: Option<SpentBookNodeMock>,
 
-    /// for communicating with other mintnodes
+    /// for communicating with other nodes
     server_endpoint: ServerEndpoint,
 
     keygen: Option<bls_dkg::KeyGen>,
@@ -94,8 +93,7 @@ async fn do_main() -> Result<()> {
         incoming_connections,
     };
 
-    let mut rng = rand8::thread_rng();
-    let my_xor_name = XorName::random(&mut rng);
+    let my_xor_name: XorName = xor_name::rand::random();
 
     println!(
         "Spentbook [{}] listening for messages at: {}",
@@ -152,7 +150,7 @@ impl SpentbookNodeServer {
                     bincode::deserialize(&bytes).into_diagnostic()?;
 
                 debug!("[Net] received from {:?} --> {:?}", socket_addr, net_msg);
-                let mut rng = rand8::thread_rng();
+                let mut rng = rng::thread_rng();
 
                 match net_msg {
                     wire::spentbook::Msg::P2p(p2p_msg) => match p2p_msg {
@@ -327,7 +325,11 @@ impl SpentbookNodeServer {
                     let (_, outcome) = keygen.generate_keys().unwrap();
                     println!("outcome threshold: {}", outcome.public_key_set.threshold());
                     self.spentbook_node = Some(SpentBookNodeMock::from(SimpleKeyManager::from(
-                        SimpleSigner::from(outcome),
+                        SimpleSigner::from((
+                            outcome.public_key_set,
+                            outcome.secret_key_share,
+                            outcome.index,
+                        )),
                     )));
                     info!("DKG finalized!");
                     info!("SpentbookNode created!");
@@ -350,90 +352,3 @@ impl SpentbookNodeServer {
         Ok(())
     }
 }
-
-/*
-/// Displays mint information in human readable form
-fn print_mintinfo_human(mintinfo: &SpentbookInfo) -> Result<()> {
-    println!();
-
-    println!("Number of Spentbook Nodes: {}\n", mintinfo.mintnodes.len());
-
-    println!("-- Spentbook Keys --\n");
-    println!("SecretKeySet (Poly): {}\n", to_be_hex(&mintinfo.poly)?);
-
-    println!(
-        "PublicKeySet: {}\n",
-        to_be_hex(&mintinfo.secret_key_set.public_keys())?
-    );
-
-    println!(
-        "PublicKey: {}\n",
-        to_be_hex(&mintinfo.secret_key_set.public_keys().public_key())?
-    );
-
-    println!("\n   -- SecretKeyShares --");
-    for i in 0..mintinfo.secret_key_set.threshold() + 2 {
-        println!(
-            "    {}. {}",
-            i,
-            encode(&sks_to_bytes(&mintinfo.secret_key_set.secret_key_share(i))?)
-        );
-    }
-
-    let mut secret_key_shares: BTreeMap<usize, SecretKeyShare> = Default::default();
-
-    println!("\n   -- PublicKeyShares --");
-    for i in 0..mintinfo.secret_key_set.threshold() + 2 {
-        // the 2nd line matches ian coleman's bls tool output.  but why not the first?
-        //        println!("  {}. {}", i, to_be_hex::<PublicKeyShare>(&sks.public_keys().public_key_share(i))?);
-        println!(
-            "    {}. {}",
-            i,
-            encode(
-                &mintinfo
-                    .secret_key_set
-                    .public_keys()
-                    .public_key_share(i)
-                    .to_bytes()
-            )
-        );
-        secret_key_shares.insert(i, mintinfo.secret_key_set.secret_key_share(i));
-    }
-
-    println!(
-        "\n   Required Signers: {}   (Threshold = {})",
-        mintinfo.secret_key_set.threshold() + 1,
-        mintinfo.secret_key_set.threshold()
-    );
-
-    println!("\n-- Genesis DBC --\n");
-    print_dbc_human(&mintinfo.genesis, true, None)?;
-
-    for (i, spentbook) in mintinfo.spentbook_nodes.iter().enumerate() {
-        println!("\n-- SpentBook Node {} --\n", i);
-        for (key_image, _tx) in spentbook.iter() {
-            println!("  {}", encode(&key_image.to_bytes()));
-        }
-    }
-
-    println!();
-
-    Ok(())
-}
-
-/// displays a welcome logo/banner for the app.
-fn print_logo() {
-    println!(
-        r#"
- __     _
-(_  _._|__  |\ | __|_     _ ._|
-__)(_| |(/_ | \|(/_|_\/\/(_)| |<
- ____  ____   ____   __  __ _       _
-|  _ \| __ ) / ___| |  \/  (_)_ __ | |_
-| | | |  _ \| |     | |\/| | | '_ \| __|
-| |_| | |_) | |___  | |  | | | | | | |_
-|____/|____/ \____| |_|  |_|_|_| |_|\__|
-  "#
-    );
-}
-*/
