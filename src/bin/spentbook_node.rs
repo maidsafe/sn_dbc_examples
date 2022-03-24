@@ -8,9 +8,10 @@
 // Software.
 
 use bytes::Bytes;
-use log::{debug, info, trace};
+use log::{debug, error, info, trace};
 use miette::{IntoDiagnostic, Result};
 
+use serde::{Deserialize, Serialize};
 use sn_dbc::{
     rand::RngCore, rng, KeyImage, KeyManager, RingCtTransaction, SimpleKeyManager, SimpleSigner,
     SpentBookNodeMock, SpentProofShare,
@@ -24,7 +25,15 @@ use structopt::StructOpt;
 
 use bls_dkg::KeyGen;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpentLogEntry {
+    key_image: KeyImage,
+    transaction: RingCtTransaction,
+}
 
 /// Configuration for the program
 #[derive(StructOpt)]
@@ -35,6 +44,12 @@ pub struct SpentbookNodeConfig {
     /// number of SpentbookNode peers that make up a Spentbook
     #[structopt(long, default_value = "3")]
     quorum_size: usize,
+
+    #[structopt(long, default_value = "1111")]
+    port: u16,
+
+    #[structopt(long, parse(from_os_str))]
+    spentbook_file: PathBuf,
 
     #[structopt(flatten)]
     p2p_qp2p_opts: Config,
@@ -82,7 +97,7 @@ async fn do_main() -> Result<()> {
     let config = SpentbookNodeConfig::from_args();
 
     let (endpoint, incoming_connections, _contact) = Endpoint::new_peer(
-        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, config.port)),
         &[],
         config.p2p_qp2p_opts.clone(),
     )
@@ -201,10 +216,36 @@ impl SpentbookNodeServer {
         key_image: KeyImage,
         tx: RingCtTransaction,
     ) -> sn_dbc::Result<SpentProofShare> {
-        self.spentbook_node
+        match self
+            .spentbook_node
             .as_mut()
             .unwrap()
-            .log_spent(key_image, tx)
+            .log_spent(key_image, tx.clone())
+        {
+            Ok(sps) => {
+                self.append_spent_log(key_image, tx).await.unwrap();
+                Ok(sps)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn append_spent_log(&self, key_image: KeyImage, tx: RingCtTransaction) -> Result<()> {
+        use std::fs::OpenOptions;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .open(&self.config.spentbook_file)
+            .unwrap();
+        let entry = SpentLogEntry {
+            key_image,
+            transaction: tx,
+        };
+        let entry_bytes = Bytes::from(ron::to_string(&entry).unwrap());
+        let _ = file.write(&entry_bytes);
+        let _ = file.write(b"\n");
+        Ok(())
     }
 
     async fn send_p2p_network_msg(
@@ -288,7 +329,6 @@ impl SpentbookNodeServer {
     async fn initiate_dkg(&mut self) -> Result<()> {
         let names: BTreeSet<XorName> = self.peers.keys().cloned().collect();
         let threshold = names.len() - 1;
-        println!("dkg threshold: {}", threshold);
         let (keygen, message_and_target) =
             KeyGen::initialize(self.xor_name, threshold, names).unwrap();
         self.broadcast_p2p_messages(message_and_target).await?;
@@ -323,7 +363,6 @@ impl SpentbookNodeServer {
             Some(keygen) => {
                 if keygen.is_finalized() {
                     let (_, outcome) = keygen.generate_keys().unwrap();
-                    println!("outcome threshold: {}", outcome.public_key_set.threshold());
                     self.spentbook_node = Some(SpentBookNodeMock::from(SimpleKeyManager::from(
                         SimpleSigner::from((
                             outcome.public_key_set,
@@ -331,13 +370,52 @@ impl SpentbookNodeServer {
                             outcome.index,
                         )),
                     )));
-                    info!("DKG finalized!");
-                    info!("SpentbookNode created!");
+                    info!("DKG finalized, SpentbookNode created!");
+                    self.read_spentbook_log().await?;
+                    println!("SpentbookNode created. ready to process spentbook requests.");
                 }
                 Ok(())
             }
             None => Ok(()), // already logged it above
         }
+    }
+
+    async fn read_spentbook_log(&mut self) -> Result<()> {
+        use std::fs::File;
+        use std::io::{BufRead, BufReader};
+
+        if !self.config.spentbook_file.exists() {
+            return Ok(());
+        }
+
+        // Open the file in read-only mode (ignoring errors).
+        let file = File::open(&self.config.spentbook_file).unwrap();
+        let reader = BufReader::new(file);
+
+        // Read the file line by line using the lines() iterator from std::io::BufRead.
+        for (index, line) in reader.lines().enumerate() {
+            let line = line.unwrap(); // Ignore errors.
+
+            let entry: SpentLogEntry = ron::from_str(&line).into_diagnostic()?;
+
+            match self
+                .spentbook_node
+                .as_mut()
+                .unwrap()
+                .log_spent(entry.key_image, entry.transaction)
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    error!(
+                        "unable to log spentbook entry. {} {:?}:{}",
+                        e.to_string(),
+                        self.config.spentbook_file,
+                        index + 1
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn broadcast_p2p_messages(

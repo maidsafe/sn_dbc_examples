@@ -17,6 +17,7 @@ use rustyline::Editor;
 use serde::{Deserialize, Serialize};
 use sn_dbc_examples::wire;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use xor_name::XorName;
 
 use sn_dbc::{
@@ -38,11 +39,14 @@ use std::os::unix::{io::AsRawFd, prelude::RawFd};
 use termios::{tcsetattr, Termios, ICANON, TCSADRAIN};
 
 /// Configuration for the program
-#[derive(StructOpt, Default)]
+#[derive(StructOpt)]
 pub struct WalletNodeConfig {
     /// address:port of spentbook node used to query spentbook peers upon startup
-    #[structopt(long)]
-    join_spentbook: Option<SocketAddr>,
+    #[structopt(default_value = "127.0.0.1:1111")]
+    join_spentbook: SocketAddr,
+
+    #[structopt(long, parse(from_os_str), default_value = ".wallet.dat")]
+    wallet_file: PathBuf,
 
     #[structopt(flatten)]
     wallet_qp2p_opts: Config,
@@ -151,20 +155,20 @@ impl Wallet {
         Ok(dbc_info)
     }
 
-    async fn save(&mut self) -> Result<()> {
+    async fn save(&mut self, path: &Path) -> Result<()> {
         use std::io::Write;
         let bytes = bincode::serialize(&self).into_diagnostic()?;
 
-        let mut file = std::fs::File::create("wallet.dat").into_diagnostic()?;
+        let mut file = std::fs::File::create(&path).into_diagnostic()?;
         file.write(&bytes).into_diagnostic()?;
 
         Ok(())
     }
 
-    async fn load() -> Result<Self> {
+    async fn load(path: &Path) -> Result<Self> {
         use std::io::Read;
 
-        let mut file = std::fs::File::open("wallet.dat").into_diagnostic()?;
+        let mut file = std::fs::File::open(&path).into_diagnostic()?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).into_diagnostic()?;
 
@@ -217,8 +221,8 @@ async fn do_main() -> Result<()> {
     .into_diagnostic()?;
 
     let my_node = WalletNodeClient {
+        wallet: Wallet::load(&config.wallet_file).await.unwrap_or_default(),
         config,
-        wallet: Wallet::load().await.unwrap_or_default(),
         spentbook_nodes: Default::default(),
         spentbook_pks: None,
         wallet_endpoint,
@@ -290,18 +294,16 @@ impl WalletNodeClient {
             }
             println!();
         }
-        self.wallet.save().await
+        self.wallet.save(&self.config.wallet_file).await
     }
 
     async fn cli_save(&mut self) -> Result<()> {
-        self.wallet.save().await
+        self.wallet.save(&self.config.wallet_file).await
     }
 
     async fn process_config(&mut self) -> Result<()> {
-        if let Some(addr) = self.config.join_spentbook {
-            self.join_spentbook_section(addr).await?;
-        }
-
+        self.join_spentbook_section(self.config.join_spentbook)
+            .await?;
         Ok(())
     }
 

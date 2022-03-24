@@ -53,3 +53,7 @@ tmp
 
 #/target
 #Cargo.lock
+
+# local data/state
+.*.dat
+*.dat
