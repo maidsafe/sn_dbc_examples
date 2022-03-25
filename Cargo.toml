@@ -23,6 +23,7 @@ termios = "0.3.3"
 bls_dkg = "0.10.0"
 xor_name = "4.0.1"
 ron = "0.7.0"
+thiserror = "1.0.30"
 
 [dependencies.qp2p]
 version = "0.28.5"

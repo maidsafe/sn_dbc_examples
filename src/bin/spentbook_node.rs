@@ -186,13 +186,16 @@ impl SpentbookNodeServer {
                                 }
                                 wire::spentbook::wallet::request::Msg::Discover => {
                                     wire::spentbook::wallet::reply::Msg::Discover(
-                                        self.spentbook_node
-                                            .as_ref()
-                                            .unwrap()
-                                            .key_manager
-                                            .public_key_set()
-                                            .unwrap()
-                                            .clone(),
+                                        match self.spentbook_node.as_ref() {
+                                            Some(spentbook_node) => Some(
+                                                spentbook_node
+                                                    .key_manager
+                                                    .public_key_set()
+                                                    .into_diagnostic()?
+                                                    .clone(),
+                                            ),
+                                            None => None,
+                                        },
                                         self.peers.clone(),
                                     )
                                 }
@@ -201,7 +204,8 @@ impl SpentbookNodeServer {
                             let m = wire::spentbook::Msg::Wallet(
                                 wire::spentbook::wallet::Msg::Reply(reply_msg),
                             );
-                            let reply_msg_bytes = Bytes::from(bincode::serialize(&m).unwrap());
+                            let reply_msg_bytes =
+                                Bytes::from(bincode::serialize(&m).into_diagnostic()?);
                             connection.send(reply_msg_bytes).await.into_diagnostic()?;
                         }
                     }
@@ -215,18 +219,20 @@ impl SpentbookNodeServer {
         &mut self,
         key_image: KeyImage,
         tx: RingCtTransaction,
-    ) -> sn_dbc::Result<SpentProofShare> {
-        match self
-            .spentbook_node
-            .as_mut()
-            .unwrap()
-            .log_spent(key_image, tx.clone())
-        {
-            Ok(sps) => {
-                self.append_spent_log(key_image, tx).await.unwrap();
-                Ok(sps)
+    ) -> wire::spentbook::wallet::Result<SpentProofShare> {
+        if let Some(spentbook_node) = self.spentbook_node.as_mut() {
+            match spentbook_node.log_spent(key_image, tx.clone()) {
+                Ok(sps) => {
+                    self.append_spent_log(key_image, tx)
+                        .await
+                        .map_err(|_| wire::spentbook::wallet::Error::Internal)?;
+                    Ok(sps)
+                }
+                Err(e) => Err(e.into()),
             }
-            Err(e) => Err(e),
+        } else {
+            debug!("ignoring log_spent() request because spentbook_node not yet created.");
+            Err(wire::spentbook::wallet::Error::NotReady)
         }
     }
 
@@ -237,12 +243,12 @@ impl SpentbookNodeServer {
             .create(true)
             .append(true)
             .open(&self.config.spentbook_file)
-            .unwrap();
+            .into_diagnostic()?;
         let entry = SpentLogEntry {
             key_image,
             transaction: tx,
         };
-        let entry_bytes = Bytes::from(ron::to_string(&entry).unwrap());
+        let entry_bytes = Bytes::from(ron::to_string(&entry).into_diagnostic()?);
         let _ = file.write(&entry_bytes);
         let _ = file.write(b"\n");
         Ok(())
@@ -272,8 +278,7 @@ impl SpentbookNodeServer {
 
         debug!("[P2P] Sending message to {:?} --> {:?}", addr, msg);
 
-        // fixme: unwrap
-        let msg = bincode::serialize(&msg).unwrap();
+        let msg = bincode::serialize(&msg).into_diagnostic()?;
 
         let (connection, _) = self
             .server_endpoint
@@ -281,21 +286,8 @@ impl SpentbookNodeServer {
             .connect_to(&addr)
             .await
             .into_diagnostic()?;
-        // {
-        //     error!("[P2P] Failed to connect to {}. {:?}", addr, e);
-        //     return;
-        // }
-
-        // debug!(
-        //     "[P2P] Sending message to {:?} --> {:?}",
-        //     addr, msg
-        // );
 
         connection.send(msg.into()).await.into_diagnostic()
-        // {
-        //     Ok(()) => trace!("[P2P] Sent network msg successfully."),
-        //     Err(e) => error!("[P2P] Failed to send network msg: {:?}", e),
-        // }
     }
 
     async fn handle_peer_msg(&mut self, actor: XorName, addr: SocketAddr) -> Result<()> {
@@ -330,7 +322,7 @@ impl SpentbookNodeServer {
         let names: BTreeSet<XorName> = self.peers.keys().cloned().collect();
         let threshold = names.len() - 1;
         let (keygen, message_and_target) =
-            KeyGen::initialize(self.xor_name, threshold, names).unwrap();
+            KeyGen::initialize(self.xor_name, threshold, names).into_diagnostic()?;
         self.broadcast_p2p_messages(message_and_target).await?;
 
         self.keygen = Some(keygen);
@@ -362,17 +354,21 @@ impl SpentbookNodeServer {
         match &mut self.keygen {
             Some(keygen) => {
                 if keygen.is_finalized() {
-                    let (_, outcome) = keygen.generate_keys().unwrap();
-                    self.spentbook_node = Some(SpentBookNodeMock::from(SimpleKeyManager::from(
-                        SimpleSigner::from((
-                            outcome.public_key_set,
-                            outcome.secret_key_share,
-                            outcome.index,
-                        )),
-                    )));
-                    info!("DKG finalized, SpentbookNode created!");
-                    self.read_spentbook_log().await?;
-                    println!("SpentbookNode created. ready to process spentbook requests.");
+                    info!("DKG finalized");
+                    if let Some((_, outcome)) = keygen.generate_keys() {
+                        self.spentbook_node = Some(SpentBookNodeMock::from(
+                            SimpleKeyManager::from(SimpleSigner::from((
+                                outcome.public_key_set,
+                                outcome.secret_key_share,
+                                outcome.index,
+                            ))),
+                        ));
+                        info!("SpentbookNode created!");
+                        self.read_spentbook_log().await?;
+                        println!("SpentbookNode created. ready to process spentbook requests.");
+                    } else {
+                        error!("generate_keys() failed!");
+                    }
                 }
                 Ok(())
             }
@@ -389,29 +385,26 @@ impl SpentbookNodeServer {
         }
 
         // Open the file in read-only mode (ignoring errors).
-        let file = File::open(&self.config.spentbook_file).unwrap();
+        let file = File::open(&self.config.spentbook_file).into_diagnostic()?;
         let reader = BufReader::new(file);
 
-        // Read the file line by line using the lines() iterator from std::io::BufRead.
-        for (index, line) in reader.lines().enumerate() {
-            let line = line.unwrap(); // Ignore errors.
+        if let Some(spentbook_node) = self.spentbook_node.as_mut() {
+            // Read the file line by line using the lines() iterator from std::io::BufRead.
+            for (index, line) in reader.lines().enumerate() {
+                let line = line.into_diagnostic()?;
 
-            let entry: SpentLogEntry = ron::from_str(&line).into_diagnostic()?;
+                let entry: SpentLogEntry = ron::from_str(&line).into_diagnostic()?;
 
-            match self
-                .spentbook_node
-                .as_mut()
-                .unwrap()
-                .log_spent(entry.key_image, entry.transaction)
-            {
-                Ok(_) => {}
-                Err(e) => {
-                    error!(
-                        "unable to log spentbook entry. {} {:?}:{}",
-                        e.to_string(),
-                        self.config.spentbook_file,
-                        index + 1
-                    );
+                match spentbook_node.log_spent(entry.key_image, entry.transaction) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!(
+                            "unable to log spentbook entry. {} {:?}:{}",
+                            e.to_string(),
+                            self.config.spentbook_file,
+                            index + 1
+                        );
+                    }
                 }
             }
         }
@@ -423,9 +416,10 @@ impl SpentbookNodeServer {
         message_and_target: Vec<bls_dkg::key_gen::MessageAndTarget>,
     ) -> Result<()> {
         for (target, message) in message_and_target.into_iter() {
-            let target_addr = self.peers.get(&target).unwrap();
-            let msg = wire::spentbook::p2p::Msg::Dkg(message);
-            self.send_p2p_network_msg(msg, target_addr).await?;
+            if let Some(target_addr) = self.peers.get(&target) {
+                let msg = wire::spentbook::p2p::Msg::Dkg(message);
+                self.send_p2p_network_msg(msg, target_addr).await?;
+            }
         }
         Ok(())
     }

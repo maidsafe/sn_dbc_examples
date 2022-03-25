@@ -8,6 +8,7 @@
 // Software.
 
 pub mod spentbook {
+
     pub mod p2p {
 
         #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -18,6 +19,22 @@ pub mod spentbook {
     }
 
     pub mod wallet {
+
+        use thiserror::Error;
+
+        pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+        #[derive(serde::Serialize, serde::Deserialize, Error, Debug, Clone)]
+        pub enum Error {
+            #[error("Spentbook not ready")]
+            NotReady,
+
+            #[error("Internal error")]
+            Internal,
+
+            #[error("Dbc error: {0}")]
+            Dbc(#[from] sn_dbc::Error),
+        }
 
         pub mod request {
             #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -32,10 +49,10 @@ pub mod spentbook {
             #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
             pub enum Msg {
                 Discover(
-                    bls_dkg::PublicKeySet,
+                    Option<bls_dkg::PublicKeySet>,
                     std::collections::BTreeMap<xor_name::XorName, std::net::SocketAddr>,
                 ),
-                LogSpent(sn_dbc::Result<sn_dbc::SpentProofShare>),
+                LogSpent(super::Result<sn_dbc::SpentProofShare>),
             }
         }
 

@@ -135,7 +135,9 @@ impl Wallet {
     // }
 
     fn mark_spent(&mut self, dbc_hash: &[u8; 32]) {
-        self.dbcs.get_mut(dbc_hash).unwrap().spent = Some(chrono::Utc::now());
+        if let Some(dbc) = self.dbcs.get_mut(dbc_hash) {
+            dbc.spent = Some(chrono::Utc::now())
+        }
     }
 
     fn add_dbc(&mut self, dbc: Dbc, notes: Option<String>, sent: bool) -> Result<DbcInfo> {
@@ -328,15 +330,13 @@ impl WalletNodeClient {
         let ownership = dinfo.ownership(&self.wallet.keys);
         match ownership {
             Ownership::Mine => {
-                let sk = self
-                    .wallet
-                    .keys
-                    .get(&dinfo.dbc.owner_base().public_key())
-                    .unwrap()
-                    .inner()
-                    .clone();
-                let secrets = dinfo.dbc.amount_secrets(&sk).into_diagnostic()?;
-                println!("Deposited {}", secrets.amount());
+                if let Some(key) = self.wallet.keys.get(&dinfo.dbc.owner_base().public_key()) {
+                    let sk = key.inner().clone();
+                    let secrets = dinfo.dbc.amount_secrets(&sk).into_diagnostic()?;
+                    println!("Deposited {}", secrets.amount());
+                } else {
+                    return Err(miette!("Secret key not found"));
+                }
             }
             Ownership::Bearer => {
                 let secrets = dinfo.dbc.amount_secrets_bearer().into_diagnostic()?;
@@ -434,52 +434,60 @@ impl WalletNodeClient {
 
         for (key_image, tx) in dbc_builder.inputs() {
             let spent_proof_shares = self.broadcast_log_spent(key_image, tx).await?;
-            let dbc_hash = inputs_hash.get(&key_image).unwrap();
-            self.wallet.mark_spent(dbc_hash);
-            dbc_builder = dbc_builder.add_spent_proof_shares(spent_proof_shares);
+            if let Some(dbc_hash) = inputs_hash.get(&key_image) {
+                self.wallet.mark_spent(dbc_hash);
+                dbc_builder = dbc_builder.add_spent_proof_shares(spent_proof_shares);
+            }
         }
 
         let dbcs = dbc_builder
-            .build(&self.gen_key_manager())
+            .build(&self.gen_key_manager()?)
             .into_diagnostic()?;
 
         let mut iter = dbcs.into_iter();
-        let (recip_dbc, _owner_once, _amount_secrets) = iter.next().unwrap();
-        let recip_dbc_hex = encode(&bincode::serialize(&recip_dbc).into_diagnostic()?);
-        let recip_dbc_is_bearer = recip_dbc.is_bearer();
-        self.wallet.add_dbc(recip_dbc, None, false)?;
-
-        let (change_dbc, _owner_once, _amount_secrets) = iter.next().unwrap();
-        self.wallet
-            .add_dbc(change_dbc, Some("change".to_string()), false)?;
-
-        println!("\n-- Begin DBC --\n{}\n-- End Dbc--\n", recip_dbc_hex);
-
-        if recip_dbc_is_bearer {
-            println!("note: this DBC is bearer and has been deposited to our wallet");
-        } else if self
-            .wallet
-            .keys
-            .contains_key(&recip_owner_once.owner_base.public_key())
-        {
-            println!("note: this DBC is 'mine' and has been deposited to our wallet");
-        } else {
-            println!("note: this DBC is owned by a third party");
+        if let Some(dbc_info) = iter.next() {
+            let (recip_dbc, _owner_once, _amount_secrets) = dbc_info;
+            let recip_dbc_hex = encode(&bincode::serialize(&recip_dbc).into_diagnostic()?);
+            let recip_dbc_is_bearer = recip_dbc.is_bearer();
+            self.wallet.add_dbc(recip_dbc, None, false)?;
+            println!("\n-- Begin DBC --\n{}\n-- End Dbc--\n", recip_dbc_hex);
+            if recip_dbc_is_bearer {
+                println!("note: this DBC is bearer and has been deposited to our wallet");
+            } else if self
+                .wallet
+                .keys
+                .contains_key(&recip_owner_once.owner_base.public_key())
+            {
+                println!("note: this DBC is 'mine' and has been deposited to our wallet");
+            } else {
+                println!("note: this DBC is owned by a third party");
+            }
         }
 
-        println!("note: change DBC deposited to our wallet.");
+        if let Some(dbc_info) = iter.next() {
+            let (change_dbc, _owner_once, _amount_secrets) = dbc_info;
+            self.wallet
+                .add_dbc(change_dbc, Some("change".to_string()), false)?;
+            println!("note: change DBC deposited to our wallet.");
+        }
 
         Ok(())
     }
 
-    fn gen_key_manager(&self) -> SimpleKeyManager {
+    fn gen_key_manager(&self) -> Result<SimpleKeyManager> {
         let sks = SecretKeySet::random(0, &mut rng::thread_rng());
         let mut key_manager = SimpleKeyManager::from(SimpleSigner::new(
             sks.public_keys(),
             (0, sks.secret_key_share(0)),
         ));
-        let _ignored = key_manager.add_known_key(self.spentbook_pks.as_ref().unwrap().public_key());
-        key_manager
+        if let Some(spentbook_pks) = self.spentbook_pks.as_ref() {
+            let _ignored = key_manager
+                .add_known_key(spentbook_pks.public_key())
+                .into_diagnostic()?;
+            Ok(key_manager)
+        } else {
+            Err(miette!("spentbook_pks not available"))
+        }
     }
 
     /*
@@ -538,20 +546,18 @@ impl WalletNodeClient {
 
         for (key_image, tx) in dbc_builder.inputs() {
             let spent_proof_shares = self.broadcast_log_spent(key_image, tx).await?;
-            // let dbc_hash = inputs_hash.get(&key_image).unwrap();
-            // self.wallet.mark_spent(dbc_hash);
             dbc_builder = dbc_builder.add_spent_proof_shares(spent_proof_shares);
         }
 
-        let (genesis_dbc, _owner_once, _amount_secrets) = dbc_builder
-            .build(&self.gen_key_manager())
+        for dbc_info in dbc_builder
+            .build(&self.gen_key_manager()?)
             .into_diagnostic()?
             .into_iter()
-            .next()
-            .unwrap();
-
-        self.wallet
-            .add_dbc(genesis_dbc, Some("Genesis Dbc".to_string()), false)?;
+        {
+            let (genesis_dbc, _owner_once, _amount_secrets) = dbc_info;
+            self.wallet
+                .add_dbc(genesis_dbc, Some("Genesis Dbc".to_string()), false)?;
+        }
 
         Ok(())
     }
@@ -587,15 +593,13 @@ impl WalletNodeClient {
             let ownership = dinfo.ownership(&self.wallet.keys);
             let (secret_key, amount_secrets) = match ownership {
                 Ownership::Mine => {
-                    let sk = self
-                        .wallet
-                        .keys
-                        .get(&dinfo.dbc.owner_base().public_key())
-                        .unwrap()
-                        .inner()
-                        .clone();
-                    let secrets = dinfo.dbc.amount_secrets(&sk).into_diagnostic()?;
-                    (sk, secrets)
+                    if let Some(key) = self.wallet.keys.get(&dinfo.dbc.owner_base().public_key()) {
+                        let sk = key.inner().clone();
+                        let secrets = dinfo.dbc.amount_secrets(&sk).into_diagnostic()?;
+                        (sk, secrets)
+                    } else {
+                        return Err(miette!("Secret key not found"));
+                    }
                 }
                 Ownership::NotMine => continue,
                 Ownership::Bearer => (
@@ -623,7 +627,7 @@ impl WalletNodeClient {
 
         match reply_msg {
             wire::spentbook::wallet::reply::Msg::Discover(spentbook_pks, spentbook_nodes) => {
-                self.spentbook_pks = Some(spentbook_pks);
+                self.spentbook_pks = spentbook_pks;
                 self.spentbook_nodes = spentbook_nodes;
                 println!("got spentbook peers: {:#?}", self.spentbook_nodes);
             }
@@ -663,8 +667,7 @@ impl WalletNodeClient {
 
         let m = wire::spentbook::Msg::Wallet(wire::spentbook::wallet::Msg::Request(msg));
 
-        // fixme: unwrap
-        let msg_bytes = bincode::serialize(&m).unwrap();
+        let msg_bytes = bincode::serialize(&m).into_diagnostic()?;
 
         let (connection, mut recv) = self
             .wallet_endpoint
@@ -673,12 +676,16 @@ impl WalletNodeClient {
             .into_diagnostic()?;
 
         connection.send(msg_bytes.into()).await.into_diagnostic()?;
-        let recv_bytes = recv.next().await.into_diagnostic()?.unwrap();
-        let net_msg: wire::spentbook::Msg = bincode::deserialize(&recv_bytes).into_diagnostic()?;
+        if let Some(recv_bytes) = recv.next().await.into_diagnostic()? {
+            let net_msg: wire::spentbook::Msg =
+                bincode::deserialize(&recv_bytes).into_diagnostic()?;
 
-        match net_msg {
-            wire::spentbook::Msg::Wallet(wire::spentbook::wallet::Msg::Reply(m)) => Ok(m),
-            _ => Err(miette!("received unexpected msg from spentbook")),
+            match net_msg {
+                wire::spentbook::Msg::Wallet(wire::spentbook::wallet::Msg::Reply(m)) => Ok(m),
+                _ => Err(miette!("received unexpected msg from spentbook")),
+            }
+        } else {
+            Err(miette!("recv.next() returned None"))
         }
     }
 }
@@ -809,7 +816,7 @@ fn from_le_hex<T: for<'de> Deserialize<'de>>(s: &str) -> Result<T> {
 #[cfg(unix)]
 fn unset_tty_icanon() -> Result<(RawFd, Termios)> {
     let tty_fd = std::io::stdin().as_raw_fd();
-    let termios_old = Termios::from_fd(tty_fd).unwrap();
+    let termios_old = Termios::from_fd(tty_fd).into_diagnostic()?;
     let mut termios_new = termios_old;
     termios_new.c_lflag &= !ICANON;
     tcsetattr(tty_fd, TCSADRAIN, &termios_new).into_diagnostic()?;

@@ -25,7 +25,9 @@ included wallet client to:
 * list unspent DBCs in wallet
 
 These examples use the sn_dbc and qp2p crates directly.  They do not use or
-rely on the Safe Network node or API.
+rely on the Safe Network node or API.  The Safe Network is building a distributed
+Spentbook/mint that should implement approximately the same public API as 
+sn_dbc::SpentbookNodeMock, but will be very different in implementation details.
 
 
 Key components are:
@@ -35,9 +37,6 @@ Key components are:
 - [blsttc](https://github.com/maidsafe/blsttc/) - BLS keys
 - [qp2p](https://github.com/maidsafe/qp2p/) - Quic protocol P2P library
 
-note: there is presently very little error handling in these examples.
-Anyone building a real wallet or spentbook should of course handle every possible
-error.  Hopefully we can find time to improve the examples with proper error handling.
 
 # Building
 
