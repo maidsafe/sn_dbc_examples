@@ -60,7 +60,7 @@ It should be possible to use it also, but that is untested
 $ git clone https://github.com/dan-da/ultraman.git
 $ cd ultraman
 $ cargo build
-$ cargo install -- --path .
+$ cargo install --path .
 ```
 
 # Running
