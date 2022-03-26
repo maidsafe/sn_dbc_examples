@@ -323,7 +323,7 @@ impl WalletNodeClient {
 
     fn cli_deposit(&mut self) -> Result<()> {
         let dbc: Dbc = from_le_hex(&readline_prompt_nl("Paste Dbc: ")?)?;
-        let notes = readline_prompt("Notes (optional): ")?;
+        let notes = readline_prompt_default("Notes (optional): ", "")?;
         let n = if notes.is_empty() { None } else { Some(notes) };
         let dinfo = self.wallet.add_dbc(dbc, n, false)?;
 
@@ -737,14 +737,16 @@ fn readline_prompt_nl(prompt: &str) -> Result<String> {
     }
 }
 
-// fn readline_prompt_nl_default(prompt: &str, default: &str) -> Result<String> {
-//     println!("{}", prompt);
-//     let line = readline()?;
-//     match line.is_empty() {
-//         true => Ok(default.to_string()),
-//         false => Ok(line),
-//     }
-// }
+fn readline_prompt_default(prompt: &str, default: &str) -> Result<String> {
+    use std::io::Write;
+    print!("{}", prompt);
+    std::io::stdout().flush().into_diagnostic()?;
+    let line = readline()?;
+    match line.is_empty() {
+        true => Ok(default.to_string()),
+        false => Ok(line),
+    }
+}
 
 /// Reads stdin to end of line, and strips newline
 fn readline() -> Result<String> {
