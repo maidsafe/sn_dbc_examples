@@ -15,20 +15,41 @@ This crate provides an example spentbook node and an example wallet.  Both are C
 The spentbook_node and the wallet are each implemented in a single source file to demonstrate how
 simple it is and make it easier to understand.  See the src/bin directory.
 
-With these examples, one can run a distributed Spentbook and use the
-included wallet client to:
-* issue a Genesis DBC
-* reissue any number of other DBCs, either bearer or owned.
-* generate new receiving public key(s)
-* deposit a DBC into a wallet
-* check wallet balance
-* list unspent DBCs in wallet
+## What this is:
+
+These examples demonstrate a simple wallet communicating with a spentbook consisting
+of 3 mock spentbook nodes simulating a single Safe Network "section".  It is useful for:
+
+* proving out the sn_dbc wallet and spentbook APIs in a quasi-real setup
+* providing a hands-on way to interact with DBCs.
+* demonstrating/learning the sn_dbc API (creating transactions, etc)
+* begin exploring similarities and differences with existing cryptocurrency wallets.
+In particular, DBCs offer a "bearer" capability and also DBCs are transferred outside
+the system, (not via a blockchain/ledger).
+
+With the included wallet example, one can:
+
+- issue a Genesis DBC
+- reissue any number of other DBCs, either bearer or owned.
+- generate new receiving public key(s)
+- deposit a DBC into a wallet
+- check wallet balance
+- list unspent DBCs in wallet
+
+## What this is NOT:
+
+* not production code.  definitely not "mainnet".
+* not an implementation of the "real" Safe Network spentbook/mint.
+* not the final APIs
+* not any indication of what final wallet/ui will be like.
+
+
+## Tech details:
 
 These examples use the sn_dbc and qp2p crates directly.  They do not use or
 rely on the Safe Network node or API.  The Safe Network is building a distributed
-Spentbook/mint that should implement approximately the same public API as 
+spentbook/mint that should implement approximately the same public API as 
 sn_dbc::SpentbookNodeMock, but will be very different in implementation details.
-
 
 Key components are:
 
