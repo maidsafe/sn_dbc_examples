@@ -61,6 +61,21 @@ Key components are:
 
 # Building
 
+## pre-requisites:
+
+### Rust
+
+See https://www.rust-lang.org/tools/install
+
+On ubuntu you will need to:
+
+### build-essential (ubuntu)
+
+```
+apt install build-essential
+```
+
+
 ## sn_dbc_examples
 
 ```
@@ -71,10 +86,12 @@ $ cargo build
 
 ## ultraman
 
-ultraman makes it easy to start/stop multiple spentbook nodes.
+ultraman makes it easy to start/stop multiple spentbook nodes,
+but is not required.
+
+### linux/unix/mac
 
 note: ultraman is a rust port of `foreman` from the ruby ecosystem.
-It should be possible to use it also, but that is untested
 
 ```
 $ git clone https://github.com/dan-da/ultraman.git
@@ -82,10 +99,27 @@ $ cd ultraman
 $ cargo build
 $ cargo install --path .
 ```
+### windows
+
+`ultraman` only runs on unix, but `foreman` can be used on windows.
+For this, you need ruby installed.
+
+In powershell:
+
+```
+@powershell -NoProfile -ExecutionPolicy unrestricted -Command "iex ((new-object net.webclient).DownloadString('<https://chocolatey.org/install.ps1>'))" && SET PATH=%PATH%;%systemdrive%\chocolatey\bin
+
+cinst ruby
+
+gem install foreman
+```
+
 
 # Running
 
 ## start the spentbook nodes
+
+### with ultraman/foreman:
 
 This will start 3 spentbook nodes.
 
@@ -95,6 +129,28 @@ $ RUST_LOG=info ultraman start
 ```
 
 To stop the nodes, just ctrl-c the ultraman proc.
+
+note: substitute `foreman` for `ultraman` if using the former.
+
+### manually:
+
+shell1:
+```
+cargo run --bin spentbook_node -- --spentbook-file .sb-node1.dat --port 1111 --quorum-size 3
+
+```
+
+shell2:
+```
+cargo run --bin spentbook_node -- --spentbook-file .sb-node2.dat --port 2222 127.0.0.1:1111 --quorum-size 3
+```
+
+shell3:
+
+```
+cargo run --bin spentbook_node -- --spentbook-file .sb-node2.dat --port 3333 127.0.0.1:1111 --quorum-size 3
+```
+
 
 ## start wallet 1
 
@@ -128,6 +184,23 @@ $ ./wipe_wallet_and_spendbook_data.sh
 
 # Example session
 
+Here's a summary of what we want to do, exact instructions to follow:
+
+Open up three shells (aka terminal windows, command prompts, tabs) in the sn_dbc_examples directory. If starting the spentbook manually, you will need 5 shells.
+
+In the first shell run `ultraman` or `foreman` to start a distributed spentbook with 3 nodes. Or alternatively start each spentbook node manually in a separate shell.
+
+In another shell (Alice) create a wallet and issue the genesis dbc.
+
+In another shell (Bob) create a wallet and a public key to receive funds.
+
+In the Alice shell create a DBC payment to Bob and copy the generated DBC.
+
+In the Bob shell deposit the DBC.
+
+Ready? Let's go!
+
+
 ## Start distributed spentbook with 3 nodes.
 
 ```
@@ -143,7 +216,10 @@ $ ultraman start
 20:35:59 peer3.1  | SpentbookNode created. ready to process spentbook requests.
 ```
 
-## Run a wallet and check initial balance (Bob's wallet)
+(alternatively, use `foreman` or start spentbook nodes manually. See instructions
+under 'Running' above.)
+
+## Run a wallet and check initial balance (Alice's wallet)
 
 in shell 1:
 
@@ -187,9 +263,13 @@ Attempting to issue the Genesis Dbc...
 Available balance: 18446744073709551615
 ```
 
-## run a second wallet and generate a new key (Alice's wallet)
+note: The genesis DBC will only ever be created once in the history 
+of the network, so it would not be a feature of regular wallet software.
+But we have to bootstrap things somehow!
 
-Alice wants to receive a payment from Bob, so she generates a
+## run a second wallet and generate a new key (Bob's wallet)
+
+Bob wants to receive a payment from Alice, so he generates a
 new receive key/address:
 
 in shell 2:
@@ -201,7 +281,7 @@ $ cargo run --bin wallet -- --wallet-file .wallet2.dat
 Receive PublicKey: a5c4a0e24ff643b9a7056af9efe3ed447472cd8b5a6f272cca4d0e2684e80325b4602c01862c9aa6aca7b7dbea1afb19
 ```
 
-## Bob reissues genesis DBC into a smaller DBC to pay Alice
+## Alice reissues genesis DBC into a smaller DBC to pay Bob
 
 in shell 1:
 
@@ -220,7 +300,7 @@ note: this DBC is owned by a third party
 note: change DBC deposited to our wallet.
 ```
 
-## Alice deposits DBC from Bob into her wallet 
+## Bob deposits DBC from Alice into her wallet 
 
 in shell 2:
 
@@ -228,11 +308,11 @@ in shell 2:
 >> deposit
 Paste Dbc: 
 01000000a5c4a0e24ff643b9a7056af9efe3ed447472cd8b ...
-Notes (optional): from Bob
+Notes (optional): from Alice
 Deposited 100000
 ```
 
-# Alice verifies wallet balance and unspent DBCs
+# Bob verifies wallet balance and unspent DBCs
 
 in shell 2:
 
