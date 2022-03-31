@@ -300,7 +300,7 @@ note: this DBC is owned by a third party
 note: change DBC deposited to our wallet.
 ```
 
-## Bob deposits DBC from Alice into her wallet 
+## Bob deposits DBC from Alice into his wallet 
 
 in shell 2:
 
