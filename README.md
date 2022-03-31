@@ -297,8 +297,12 @@ Recipient's public key: a5c4a0e24ff643b9a7056af9efe3ed447472cd8b5a6f272cca4d0e26
 -- End Dbc--
 
 note: this DBC is owned by a third party
+note: DBC written to file 2558602486.dbc
 note: change DBC deposited to our wallet.
 ```
+
+Alice provides file 2558602486.dbc to Bob.  
+(For this example, we just leave the file where it is.)
 
 ## Bob deposits DBC from Alice into his wallet 
 
@@ -306,8 +310,8 @@ in shell 2:
 
 ```
 >> deposit
-Paste Dbc: 
-01000000a5c4a0e24ff643b9a7056af9efe3ed447472cd8b ...
+Provide DBC from [f]ile or [c]lipboard: f
+Enter filename or [c]ancel: 2558602486.dbc
 Notes (optional): from Alice
 Deposited 100000
 ```

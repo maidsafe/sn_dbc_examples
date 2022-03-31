@@ -1,1 +1,1 @@
-rm -f .*.dat *.dat
+rm -f .*.dat *.dat *.dbc

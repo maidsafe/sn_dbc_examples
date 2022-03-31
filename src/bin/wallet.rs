@@ -19,6 +19,8 @@ use sn_dbc_examples::wire;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use xor_name::XorName;
+use std::fs::File;
+use std::io::Write;
 
 use sn_dbc::{
     blsttc::{serde_impl::SerdeSecret, PublicKey, SecretKey, SecretKeySet},
@@ -158,7 +160,6 @@ impl Wallet {
     }
 
     async fn save(&mut self, path: &Path) -> Result<()> {
-        use std::io::Write;
         let bytes = bincode::serialize(&self).into_diagnostic()?;
 
         let mut file = std::fs::File::create(&path).into_diagnostic()?;
@@ -322,7 +323,30 @@ impl WalletNodeClient {
     }
 
     fn cli_deposit(&mut self) -> Result<()> {
-        let dbc: Dbc = from_le_hex(&readline_prompt_nl("Paste Dbc: ")?)?;
+        let dbc_buf = match readline_prompt("Provide DBC from [f]ile or [c]lipboard: ")?.as_str() {
+            "f" => {
+                loop {
+                    match readline_prompt("Enter filename or [c]ancel: ")?.as_str() {
+                        "c" => return Ok(()),
+                        filename => {
+                            match std::fs::read_to_string(filename) {
+                                Ok(buf) => break buf,
+                                Err(_e) => println!("Unable to read file"),
+                            }
+                        }
+                    }
+                }
+            },
+            "c" => readline_prompt_nl("Paste Dbc: ")?,
+            _ => {
+                println!("Deposit cancelled");
+                return Ok(());
+            }
+        };
+        let dbc_buf_normalized = dbc_buf.replace("-- Begin DBC --", "").replace("-- End DBC --", "").replace("\n", "");
+//        println!("dbc normalized: {}", dbc_buf_normalized);
+
+        let dbc: Dbc = from_le_hex(&dbc_buf_normalized)?;
         let notes = readline_prompt_default("Notes (optional): ", "")?;
         let n = if notes.is_empty() { None } else { Some(notes) };
         let dinfo = self.wallet.add_dbc(dbc, n, false)?;
@@ -450,7 +474,8 @@ impl WalletNodeClient {
             let recip_dbc_hex = encode(&bincode::serialize(&recip_dbc).into_diagnostic()?);
             let recip_dbc_is_bearer = recip_dbc.is_bearer();
             self.wallet.add_dbc(recip_dbc, None, false)?;
-            println!("\n-- Begin DBC --\n{}\n-- End Dbc--\n", recip_dbc_hex);
+            let dbcbuf = format!("\n-- Begin DBC --\n{}\n-- End DBC --\n", recip_dbc_hex);
+            println!("{}", dbcbuf);
             if recip_dbc_is_bearer {
                 println!("note: this DBC is bearer and has been deposited to our wallet");
             } else if self
@@ -462,6 +487,11 @@ impl WalletNodeClient {
             } else {
                 println!("note: this DBC is owned by a third party");
             }
+
+            let path: String = sn_dbc::rand::random::<u32>().to_string() + ".dbc";
+            let mut fh = File::create(&path).into_diagnostic()?;
+            write!(fh, "{}", dbcbuf).into_diagnostic()?;
+            println!("note: DBC written to file {}", path);
         }
 
         if let Some(dbc_info) = iter.next() {
@@ -714,7 +744,6 @@ fn print_logo() {
 /// Prompts for input and reads the input.
 /// Re-prompts in a loop if input is empty.
 fn readline_prompt(prompt: &str) -> Result<String> {
-    use std::io::Write;
     loop {
         print!("{}", prompt);
         std::io::stdout().flush().into_diagnostic()?;
@@ -738,7 +767,6 @@ fn readline_prompt_nl(prompt: &str) -> Result<String> {
 }
 
 fn readline_prompt_default(prompt: &str, default: &str) -> Result<String> {
-    use std::io::Write;
     print!("{}", prompt);
     std::io::stdout().flush().into_diagnostic()?;
     let line = readline()?;
