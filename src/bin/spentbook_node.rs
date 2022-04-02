@@ -12,10 +12,7 @@ use log::{debug, error, info, trace};
 use miette::{IntoDiagnostic, Result};
 
 use serde::{Deserialize, Serialize};
-use sn_dbc::{
-    rand::RngCore, rng, KeyImage, KeyManager, RingCtTransaction, SimpleKeyManager, SimpleSigner,
-    SpentBookNodeMock, SpentProofShare,
-};
+use sn_dbc::{mock, rand::RngCore, rng, KeyImage, KeyManager, RingCtTransaction, SpentProofShare};
 use sn_dbc_examples::wire;
 
 use xor_name::XorName;
@@ -67,7 +64,7 @@ struct SpentbookNodeServer {
 
     peers: BTreeMap<XorName, SocketAddr>,
 
-    spentbook_node: Option<SpentBookNodeMock>,
+    spentbook_node: Option<mock::SpentBookNode>,
 
     /// for communicating with other nodes
     server_endpoint: ServerEndpoint,
@@ -356,8 +353,8 @@ impl SpentbookNodeServer {
                 if keygen.is_finalized() {
                     info!("DKG finalized");
                     if let Some((_, outcome)) = keygen.generate_keys() {
-                        self.spentbook_node = Some(SpentBookNodeMock::from(
-                            SimpleKeyManager::from(SimpleSigner::from((
+                        self.spentbook_node = Some(mock::SpentBookNode::from(
+                            mock::KeyManager::from(mock::Signer::from((
                                 outcome.public_key_set,
                                 outcome.secret_key_share,
                                 outcome.index,

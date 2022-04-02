@@ -17,15 +17,15 @@ use rustyline::Editor;
 use serde::{Deserialize, Serialize};
 use sn_dbc_examples::wire;
 use std::fmt;
-use std::path::{Path, PathBuf};
-use xor_name::XorName;
 use std::fs::File;
 use std::io::Write;
+use std::path::{Path, PathBuf};
+use xor_name::XorName;
 
 use sn_dbc::{
     blsttc::{serde_impl::SerdeSecret, PublicKey, SecretKey, SecretKeySet},
-    rng, Amount, AmountSecrets, Dbc, GenesisMaterial, KeyImage, KeyManager, Owner, OwnerOnce,
-    RingCtTransaction, SimpleKeyManager, SimpleSigner, SpentProofShare, TransactionBuilder,
+    mock, rng, Amount, AmountSecrets, Dbc, GenesisMaterial, KeyImage, KeyManager, Owner, OwnerOnce,
+    RingCtTransaction, SpentProofShare, TransactionBuilder,
 };
 
 use qp2p::{self, Config, Endpoint};
@@ -324,17 +324,13 @@ impl WalletNodeClient {
 
     fn cli_deposit(&mut self) -> Result<()> {
         let dbc_buf = match readline_prompt("Provide DBC from [f]ile or [c]lipboard: ")?.as_str() {
-            "f" => {
-                loop {
-                    match readline_prompt("Enter filename or [c]ancel: ")?.as_str() {
-                        "c" => return Ok(()),
-                        filename => {
-                            match std::fs::read_to_string(filename) {
-                                Ok(buf) => break buf,
-                                Err(_e) => println!("Unable to read file"),
-                            }
-                        }
-                    }
+            "f" => loop {
+                match readline_prompt("Enter filename or [c]ancel: ")?.as_str() {
+                    "c" => return Ok(()),
+                    filename => match std::fs::read_to_string(filename) {
+                        Ok(buf) => break buf,
+                        Err(_e) => println!("Unable to read file"),
+                    },
                 }
             },
             "c" => readline_prompt_nl("Paste Dbc: ")?,
@@ -343,8 +339,10 @@ impl WalletNodeClient {
                 return Ok(());
             }
         };
-        let dbc_buf_normalized = dbc_buf.replace("-- Begin DBC --", "").replace("-- End DBC --", "").replace("\n", "");
-//        println!("dbc normalized: {}", dbc_buf_normalized);
+        let dbc_buf_normalized = dbc_buf
+            .replace("-- Begin DBC --", "")
+            .replace("-- End DBC --", "")
+            .replace("\n", "");
 
         let dbc: Dbc = from_le_hex(&dbc_buf_normalized)?;
         let notes = readline_prompt_default("Notes (optional): ", "")?;
@@ -504,9 +502,9 @@ impl WalletNodeClient {
         Ok(())
     }
 
-    fn gen_key_manager(&self) -> Result<SimpleKeyManager> {
+    fn gen_key_manager(&self) -> Result<mock::KeyManager> {
         let sks = SecretKeySet::random(0, &mut rng::thread_rng());
-        let mut key_manager = SimpleKeyManager::from(SimpleSigner::new(
+        let mut key_manager = mock::KeyManager::from(mock::Signer::new(
             sks.public_keys(),
             (0, sks.secret_key_share(0)),
         ));
