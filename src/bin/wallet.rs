@@ -9,7 +9,6 @@
 
 use log::debug;
 use miette::{miette, IntoDiagnostic, Result};
-// use serde::{Deserialize, Serialize};
 use bls_dkg::PublicKeySet;
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
@@ -25,7 +24,7 @@ use xor_name::XorName;
 use sn_dbc::{
     blsttc::{serde_impl::SerdeSecret, PublicKey, SecretKey, SecretKeySet},
     mock, rng, Amount, AmountSecrets, Dbc, GenesisMaterial, KeyImage, KeyManager, Owner, OwnerOnce,
-    RingCtTransaction, SpentProofShare, TransactionBuilder,
+    RingCtTransaction, SpentProofShare, TransactionBuilder, DbcBuilder,
 };
 
 use qp2p::{self, Config, Endpoint};
@@ -54,6 +53,7 @@ pub struct WalletNodeConfig {
     wallet_qp2p_opts: Config,
 }
 
+#[derive(Clone)]
 enum Ownership {
     Mine,
     NotMine,
@@ -115,6 +115,7 @@ impl DbcInfo {
 struct Wallet {
     dbcs: HashMap<[u8; 32], DbcInfo>,
     keys: BTreeMap<PublicKey, SerdeSecret<SecretKey>>,
+    tx_in_process: Option<DbcBuilder>,
 }
 
 impl Wallet {
@@ -127,6 +128,16 @@ impl Wallet {
 
     fn addkey(&mut self, sk: SecretKey) {
         self.keys.insert(sk.public_key(), SerdeSecret(sk));
+    }
+
+    fn set_tx_in_process(&mut self, dbc_builder: Option<DbcBuilder>) -> Result<()> {
+        match (&self.tx_in_process, &dbc_builder) {
+            (Some(_), Some(_)) => Err(miette!("Another Tx is already in process")),           
+            _ => {
+                self.tx_in_process = dbc_builder;
+                Ok(())
+            },
+        }
     }
 
     // fn spent(&self) -> BTreeMap<&[u8; 32], &DbcInfo> {
@@ -279,8 +290,8 @@ impl WalletNodeClient {
                                 "\nCommands:
   Network: [join]
   Wallet:  [balance, deposit, issue_genesis, keys, newkey, reissue, unspent]
-  Other:   [save, exit, help]
-  future:  [spent, reissue_manual, reissue_autogen, decode, validate]"
+  Other:   [save, exit, help]"
+  // future:  [spent, reissue_manual, reissue_autogen, decode, validate]"
                             );
                             Ok(())
                         }
@@ -378,6 +389,31 @@ impl WalletNodeClient {
     }
 
     async fn cli_reissue(&mut self) -> Result<()> {
+
+        // First we check if there are any pending Tx to process. This would be
+        // a Tx that was previously started and did not complete.  If we find one
+        // then we retry it first.
+        let tx_in_process = self.wallet.tx_in_process.clone();
+        match &tx_in_process {
+            Some(dbc_builder) => {
+                println!("There is a pending/incomplete transaction that must be completed before proceeding.");
+                loop {
+                    match readline_prompt_default("attempt to complete pending transaction? [Y/n] ", "y")?.as_str() {
+                        "n" => return Ok(()),
+                        "" | "Y" | "y" => {
+                            self.exec_tx(dbc_builder.clone()).await?;
+                            self.wallet.set_tx_in_process(None)?;
+                            self.wallet.save(&self.config.wallet_file).await?;
+                            println!("pending transaction completed!\n");
+                            break;
+                        },
+                        _ => {},
+                    }
+                }
+            },
+            None => {},
+        }
+
         let balance = self.balance()?;
         if balance == 0 {
             println!("No funds available for reissue.");
@@ -423,16 +459,12 @@ impl WalletNodeClient {
         let mut rng = rng::thread_rng();
         let recip_owner_once = OwnerOnce::from_owner_base(owner_base, &mut rng);
 
-        let unspent = self.unspent()?;
         let mut tx_builder = TransactionBuilder::default();
 
-        let mut inputs_hash: BTreeMap<KeyImage, [u8; 32]> = Default::default();
+        // let mut inputs_hash: BTreeMap<KeyImage, [u8; 32]> = Default::default();
 
+        let unspent = self.unspent()?;
         for (dinfo, secret_key, _amount_secrets, _id, _ownership) in unspent.iter() {
-            inputs_hash.insert(
-                dinfo.dbc.key_image(secret_key).into_diagnostic()?,
-                dinfo.dbc.hash(),
-            );
             tx_builder = tx_builder
                 .add_input_dbc(&dinfo.dbc, secret_key, vec![], &mut rng)
                 .into_diagnostic()?;
@@ -452,15 +484,30 @@ impl WalletNodeClient {
 
             tx_builder = tx_builder.add_output_by_amount(change, change_owner_once);
         };
-        let mut dbc_builder = tx_builder.build(&mut rng).into_diagnostic()?;
+        let dbc_builder = tx_builder.build(&mut rng).into_diagnostic()?;
 
+        // We write out the pending Tx so we can later retry it in 
+        // case it does not complete.  This is necessary because we could have a case
+        // where we write the keyimage+tx to a minority subset of spentbooks and
+        // then error out somehow.
+        self.wallet.set_tx_in_process(Some(dbc_builder.clone()))?;
+        self.wallet.save(&self.config.wallet_file).await?;
+
+        self.exec_tx(dbc_builder).await?;
+
+        self.wallet.set_tx_in_process(None)?;
+        self.wallet.save(&self.config.wallet_file).await?;
+
+        Ok(())
+    }
+
+    async fn exec_tx(&mut self, mut dbc_builder: DbcBuilder) -> Result<()> {
         for (key_image, tx) in dbc_builder.inputs() {
             let spent_proof_shares = self.broadcast_log_spent(key_image, tx).await?;
-            if let Some(dbc_hash) = inputs_hash.get(&key_image) {
-                self.wallet.mark_spent(dbc_hash);
-                dbc_builder = dbc_builder.add_spent_proof_shares(spent_proof_shares);
-            }
+            dbc_builder = dbc_builder.add_spent_proof_shares(spent_proof_shares);
         }
+
+        let inputs = dbc_builder.inputs().clone();
 
         let dbcs = dbc_builder
             .build(&self.gen_key_manager()?)
@@ -471,6 +518,7 @@ impl WalletNodeClient {
             let (recip_dbc, _owner_once, _amount_secrets) = dbc_info;
             let recip_dbc_hex = encode(&bincode::serialize(&recip_dbc).into_diagnostic()?);
             let recip_dbc_is_bearer = recip_dbc.is_bearer();
+            let recip_public_key = recip_dbc.owner_base().public_key();
             self.wallet.add_dbc(recip_dbc, None, false)?;
             let dbcbuf = format!("\n-- Begin DBC --\n{}\n-- End DBC --\n", recip_dbc_hex);
             println!("{}", dbcbuf);
@@ -479,7 +527,7 @@ impl WalletNodeClient {
             } else if self
                 .wallet
                 .keys
-                .contains_key(&recip_owner_once.owner_base.public_key())
+                .contains_key(&recip_public_key)
             {
                 println!("note: this DBC is 'mine' and has been deposited to our wallet");
             } else {
@@ -497,6 +545,19 @@ impl WalletNodeClient {
             self.wallet
                 .add_dbc(change_dbc, Some("change".to_string()), false)?;
             println!("note: change DBC deposited to our wallet.");
+        }
+
+        for (key_image, _tx) in inputs.iter() {
+            let hashes: Vec<[u8; 32]> = self.unspent()?.iter().filter_map(|(dinfo, sk, ..)| {
+                if dinfo.dbc.key_image(sk).into_diagnostic().unwrap() == *key_image {
+                    Some(dinfo.dbc.hash())
+                } else {
+                    None
+                }
+            }).collect();
+            for hash in hashes.iter() {
+                self.wallet.mark_spent(hash);
+            }
         }
 
         Ok(())
@@ -517,35 +578,6 @@ impl WalletNodeClient {
             Err(miette!("spentbook_pks not available"))
         }
     }
-
-    /*
-        fn cli_reissue_manual(&mut self) -> Result<()> {
-
-            let balance = self.balance()?;
-            if balance == 0 {
-                println!("No funds available for reissue.");
-                return Ok(());
-            }
-
-            println!("Available balance: {}", balance);
-
-            loop {
-                let amount = readline_prompt("Amount to spend: ");
-                if amount <= balance {
-                    break;
-                }
-                println!("  entered amount exceeds available balance of {}.\n", balance);
-            }
-
-            println!("  -- Unspent Dbcs -- ");
-            let unspent = self.unspent()?;
-            for ((idx, (dinfo, amount, id, ownership)) in unspent.iter().enumerate() {
-                println!("{}. {} --> amount: {} ({})", idx, id, amount, ownership);
-            }
-
-            println!("\nchoose input ");
-        }
-    */
 
     // todo: move into Wallet
     fn balance(&self) -> Result<Amount> {
@@ -674,14 +706,20 @@ impl WalletNodeClient {
         let mut shares: Vec<SpentProofShare> = Default::default();
 
         for (_xorname, addr) in self.spentbook_nodes.iter() {
-            let reply_msg = self.send_spentbook_network_msg(msg.clone(), addr).await?;
-            let share = match reply_msg {
-                wire::spentbook::wallet::reply::Msg::LogSpent(share_result) => {
-                    share_result.into_diagnostic()?
+            match self.send_spentbook_network_msg(msg.clone(), addr).await {
+                Ok(reply_msg) => {
+                    let share = match reply_msg {
+                        wire::spentbook::wallet::reply::Msg::LogSpent(share_result) => {
+                            share_result.into_diagnostic()?
+                        }
+                        _ => return Err(miette!("got unexpected reply from spentbook node")),
+                    };
+                    shares.push(share);
+                },
+                Err(e) => {
+                    println!("warning: got error from spentbook node: {}", e.to_string());
                 }
-                _ => return Err(miette!("got unexpected reply from spentbook node")),
-            };
-            shares.push(share);
+            }
         }
         Ok(shares)
     }

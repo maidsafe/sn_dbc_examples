@@ -7,7 +7,8 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.44"
-sn_dbc = {git="https://github.com/dan-da/sn_dbc.git", features = ["serdes", "mock"], branch="mock_feature"}
+sn_dbc = {git="https://github.com/dan-da/sn_dbc.git", features = ["serdes", "mock"], branch="examples_integration"}
+# sn_dbc = {git="https://github.com/maidsafe/sn_dbc.git", features = ["serdes", "mock"]}
 structopt = "0.3.25"
 tokio = { version = "1.16.1", features = ["rt-multi-thread", "macros", "io-util"] }
 serde = "1.0.130"
@@ -19,7 +20,8 @@ bytes = "1.1.0"
 rustyline = "9.0.0"
 chrono = {version = "0.4.19", features = ["serde"]}
 hex = "0.4.3"
-bls_dkg = "0.10.0"
+# bls_dkg = "0.10.0"
+bls_dkg = {path = "/home/danda/dev/maidsafe/bls_dkg"}
 xor_name = "4.0.1"
 ron = "0.7.0"
 thiserror = "1.0.30"
