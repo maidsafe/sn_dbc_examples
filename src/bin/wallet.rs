@@ -459,14 +459,15 @@ impl WalletNodeClient {
         let mut rng = rng::thread_rng();
         let recip_owner_once = OwnerOnce::from_owner_base(owner_base, &mut rng);
 
-        let mut tx_builder = TransactionBuilder::default();
+        let mut tx_builder = TransactionBuilder::default()
+            .set_require_all_decoys(false);   // fixme: remove
 
         // let mut inputs_hash: BTreeMap<KeyImage, [u8; 32]> = Default::default();
 
         let unspent = self.unspent()?;
         for (dinfo, secret_key, _amount_secrets, _id, _ownership) in unspent.iter() {
             tx_builder = tx_builder
-                .add_input_dbc(&dinfo.dbc, secret_key, vec![], &mut rng)
+                .add_input_dbc(&dinfo.dbc, secret_key)
                 .into_diagnostic()?;
 
             if tx_builder.inputs_amount_sum() >= spend_amount {
@@ -636,7 +637,7 @@ impl WalletNodeClient {
             println!(
                 "{}, rcvd: {}, amount: {} ({})",
                 id,
-                dinfo.received.to_rfc3339(),
+                dinfo.received.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S"),
                 amount_secrets.amount(),
                 ownership
             );
